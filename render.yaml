@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: charts
+    runtime: node
+    rootDir: charts/frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production

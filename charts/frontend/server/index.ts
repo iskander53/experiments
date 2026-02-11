@@ -1,8 +1,9 @@
 import express from "express";
 import cors from "cors";
 import Database from "better-sqlite3";
-import { resolve, dirname } from "path";
+import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { existsSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = resolve(__dirname, "../../deviations.db");
@@ -12,6 +13,12 @@ db.pragma("journal_mode = WAL");
 
 const app = express();
 app.use(cors());
+
+// Serve built frontend in production
+const distPath = resolve(__dirname, "../dist");
+if (existsSync(distPath)) {
+  app.use(express.static(distPath));
+}
 
 const VALID_DIMS = new Set([
   "stage", "deviation_category", "deviation", "warehouse",
@@ -96,7 +103,14 @@ app.get("/api/pivot", (req, res) => {
   res.json(rows);
 });
 
-const PORT = 5001;
+// SPA fallback: serve index.html for non-API routes in production
+if (existsSync(distPath)) {
+  app.get("*", (_req, res) => {
+    res.sendFile(join(distPath, "index.html"));
+  });
+}
+
+const PORT = parseInt(process.env.PORT || "5001", 10);
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
