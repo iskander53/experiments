@@ -476,6 +476,83 @@ interface TreemapSectionProps {
   showCategoryFilter?: boolean;
 }
 
+interface DetailRow {
+  datetime: string;
+  day: string;
+  week: string;
+  hour: number;
+  shift: string;
+  stage: string;
+  deviation_category: string;
+  deviation: string;
+  warehouse: string;
+  customer: string;
+  deviation_count: number;
+  quantity: number;
+  amount_rub: number;
+  employee: string;
+}
+
+interface DetailModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  title: string;
+  rows: DetailRow[];
+  loading: boolean;
+}
+
+function DetailModal({ isOpen, onClose, title, rows, loading }: DetailModalProps) {
+  if (!isOpen) return null;
+  
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          {loading && <p className="loading">Загрузка...</p>}
+          {!loading && rows.length === 0 && <p>Нет данных</p>}
+          {!loading && rows.length > 0 && (
+            <table className="detail-table">
+              <thead>
+                <tr>
+                  <th>Дата/Время</th>
+                  <th>Склад</th>
+                  <th>Этап</th>
+                  <th>Отклонение</th>
+                  <th>Кол-во откл.</th>
+                  <th>Ед.</th>
+                  <th>Сумма, ₽</th>
+                  <th>Сотрудник</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr key={idx}>
+                    <td>{row.datetime}</td>
+                    <td>{row.warehouse}</td>
+                    <td>{row.stage}</td>
+                    <td>{row.deviation}</td>
+                    <td>{row.deviation_count}</td>
+                    <td>{row.quantity}</td>
+                    <td>{row.amount_rub?.toLocaleString()}</td>
+                    <td>{row.employee}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {!loading && rows.length === 500 && (
+            <p className="limit-note">Показаны первые 500 записей</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TreemapSection({
   title,
   filterSections,
@@ -490,6 +567,12 @@ function TreemapSection({
   const [selectedCategories, setSelectedCategories] = useState<string[]>(fixedCategories || []);
   const [data, setData] = useState<DataItem[]>([]);
   const [loading, setLoading] = useState(false);
+  
+  // Detail modal state
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState("");
+  const [modalRows, setModalRows] = useState<DetailRow[]>([]);
+  const [modalLoading, setModalLoading] = useState(false);
 
   useEffect(() => {
     if (selectedDims.length === 0) return;
@@ -537,6 +620,51 @@ function TreemapSection({
     setSelectedCategories((prev) =>
       prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
     );
+  };
+
+  // Handle treemap click - fetch detail rows for leaf nodes
+  const handleTreemapClick = (event: any) => {
+    const point = event.points?.[0];
+    if (!point) return;
+    
+    // Only handle leaf nodes (nodes at the deepest level)
+    const pointId = point.id as string;
+    if (!pointId) return;
+    
+    const parts = pointId.split("/").filter(Boolean);
+    
+    // Check if this is a leaf node (has same depth as selectedDims)
+    // Allow clicking if we have at least one dimension value
+    if (parts.length === 0 || parts.length > selectedDims.length) return;
+    
+    // Reset modal state first
+    setModalRows([]);
+    setModalTitle(point.label || pointId);
+    setModalOpen(true);
+    setModalLoading(true);
+    
+    // Build filter params from the path
+    const params = new URLSearchParams();
+    parts.forEach((value, idx) => {
+      if (selectedDims[idx] && value) {
+        params.set(selectedDims[idx], value);
+      }
+    });
+    
+    // Add category filter if active
+    const cats = fixedCategories || selectedCategories;
+    if (cats.length > 0) {
+      params.set("deviation_category", cats[0]); // API expects single value
+    }
+    
+    fetch(`/api/data/rows?${params}`)
+      .then((r) => r.json())
+      .then((rows: DetailRow[]) => setModalRows(rows))
+      .catch((err) => {
+        console.error("Failed to fetch rows:", err);
+        setModalRows([]);
+      })
+      .finally(() => setModalLoading(false));
   };
 
   return (
@@ -603,11 +731,21 @@ function TreemapSection({
                   borderRadius: "12px",
                   boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
                   border: "1px solid #e0e0e0",
+                  cursor: "pointer",
                 }}
+                onClick={handleTreemapClick}
               />
             </div>
           )}
         </div>
+
+        <DetailModal
+          isOpen={modalOpen}
+          onClose={() => setModalOpen(false)}
+          title={modalTitle}
+          rows={modalRows}
+          loading={modalLoading}
+        />
 
         <aside className="filters-sidebar">
           <section className="filter-section">

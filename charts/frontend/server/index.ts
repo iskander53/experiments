@@ -89,6 +89,39 @@ app.get("/api/data", (req, res) => {
   res.json(result);
 });
 
+// Get raw rows filtered by dimension values (for detail view)
+app.get("/api/data/rows", (req, res) => {
+  const filters = req.query as Record<string, string>;
+  
+  let query = `SELECT datetime, day, week, hour, shift, stage, deviation_category, deviation, 
+               warehouse, customer, deviation_count, quantity, amount_rub, employee 
+               FROM deviations WHERE 1=1`;
+  const params: string[] = [];
+  
+  // Apply dimension filters (map frontend names to DB column names)
+  const dimMap: Record<string, string> = {
+    stage: "stage",
+    warehouse: "warehouse",
+    customer: "customer",
+    deviation: "deviation",
+    deviation_category: "deviation_category",
+    employee: "employee",
+    shift: "shift",
+  };
+  
+  for (const [key, value] of Object.entries(filters)) {
+    if (dimMap[key] && value) {
+      query += ` AND ${dimMap[key]} = ?`;
+      params.push(value);
+    }
+  }
+  
+  query += ` ORDER BY datetime DESC LIMIT 500`;
+  
+  const rows = db.prepare(query).all(...params);
+  res.json(rows);
+});
+
 app.get("/api/pivot", (req, res) => {
   const rowParam = (req.query.row as string) || "stage";
   const colDim = (req.query.col as string) || "warehouse";
