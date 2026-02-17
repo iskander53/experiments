@@ -357,3 +357,12 @@ tbody tr:hover td.row-label {
   color: #64748b;
   text-align: center;
 }
+
+/* Context menu hint */
+.context-hint {
+  font-size: 0.8rem;
+  color: #64748b;
+  text-align: center;
+  margin-top: 8px;
+  font-style: italic;
+}

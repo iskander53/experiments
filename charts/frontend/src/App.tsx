@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import Plot from "react-plotly.js";
 import "./App.css";
 
@@ -573,6 +573,9 @@ function TreemapSection({
   const [modalTitle, setModalTitle] = useState("");
   const [modalRows, setModalRows] = useState<DetailRow[]>([]);
   const [modalLoading, setModalLoading] = useState(false);
+  
+  // Track last hovered leaf node for right-click
+  const lastHoveredLeaf = useRef<{id: string, label: string} | null>(null);
 
   useEffect(() => {
     if (selectedDims.length === 0) return;
@@ -622,24 +625,53 @@ function TreemapSection({
     );
   };
 
-  // Handle treemap click - fetch detail rows for leaf nodes
-  const handleTreemapClick = (event: any) => {
+  // Build a set of leaf node IDs for quick lookup (using same separator as makeId: "|||")
+  const leafNodeIds = useMemo(() => {
+    const leaves = new Set<string>();
+    if (selectedDims.length === 0) return leaves;
+    
+    // Leaf nodes are at the deepest level (selectedDims.length parts)
+    for (const row of data) {
+      const parts: string[] = [];
+      for (const dim of selectedDims) {
+        parts.push(String(row[dim] ?? "Unknown"));
+      }
+      leaves.add(parts.join("|||"));
+    }
+    return leaves;
+  }, [data, selectedDims]);
+
+  // Handle hover on treemap - track leaf nodes for right-click
+  const handleTreemapHover = (event: any) => {
     const point = event.points?.[0];
-    if (!point) return;
+    if (!point) {
+      lastHoveredLeaf.current = null;
+      return;
+    }
     
-    // Only handle leaf nodes (nodes at the deepest level)
     const pointId = point.id as string;
-    if (!pointId) return;
+    if (!pointId || !leafNodeIds.has(pointId)) {
+      lastHoveredLeaf.current = null;
+      return;
+    }
     
-    const parts = pointId.split("/").filter(Boolean);
+    lastHoveredLeaf.current = {
+      id: pointId,
+      label: point.label || pointId,
+    };
+  };
+
+  // Handle right-click on treemap - show details for leaf node
+  const handleContextMenu = (e: React.MouseEvent) => {
+    if (!lastHoveredLeaf.current) return;
     
-    // Check if this is a leaf node (has same depth as selectedDims)
-    // Allow clicking if we have at least one dimension value
-    if (parts.length === 0 || parts.length > selectedDims.length) return;
+    e.preventDefault();
     
-    // Reset modal state first
+    const { id, label } = lastHoveredLeaf.current;
+    const parts = id.split("|||").filter(Boolean);
+    
     setModalRows([]);
-    setModalTitle(point.label || pointId);
+    setModalTitle(label);
     setModalOpen(true);
     setModalLoading(true);
     
@@ -654,7 +686,7 @@ function TreemapSection({
     // Add category filter if active
     const cats = fixedCategories || selectedCategories;
     if (cats.length > 0) {
-      params.set("deviation_category", cats[0]); // API expects single value
+      params.set("deviation_category", cats[0]);
     }
     
     fetch(`/api/data/rows?${params}`)
@@ -676,7 +708,7 @@ function TreemapSection({
           {loading && <p className="loading">Загрузка...</p>}
 
           {!loading && data.length > 0 && (
-            <div className="chart-container">
+            <div className="chart-container" onContextMenu={handleContextMenu}>
               <Plot
                 key={selectedDims.join(",") + measure}
                 data={[
@@ -731,10 +763,10 @@ function TreemapSection({
                   borderRadius: "12px",
                   boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
                   border: "1px solid #e0e0e0",
-                  cursor: "pointer",
                 }}
-                onClick={handleTreemapClick}
+                onHover={handleTreemapHover}
               />
+              <p className="context-hint">Правый клик на ячейке нижнего уровня — показать детали</p>
             </div>
           )}
         </div>
