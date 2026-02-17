@@ -6,11 +6,13 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CSV_PATH = resolve(__dirname, "../../deviations.csv");
+const TSV_PATH = resolve(__dirname, "../../times.tsv");
 const DB_PATH = resolve(__dirname, "../../deviations.db");
 
 function parseRussianDecimal(value: string): number {
   if (!value || value === "0") return 0;
-  return parseFloat(value.replace(",", "."));
+  // Remove spaces (thousand separators) and replace comma with dot
+  return parseFloat(value.replace(/\s/g, "").replace(",", "."));
 }
 
 function parseDate(value: string): string {
@@ -93,5 +95,78 @@ const insertMany = db.transaction((rows: string[][]) => {
 
 const skipped = insertMany(rows);
 const count = db.prepare("SELECT COUNT(*) as c FROM deviations").get() as { c: number };
-console.log(`Migrated ${count.c} rows into ${DB_PATH} (skipped ${skipped})`);
+console.log(`Migrated ${count.c} deviations rows (skipped ${skipped})`);
+
+// ---- Migrate times.tsv ----
+console.log(`\nReading TSV from ${TSV_PATH}...`);
+const tsv = readFileSync(TSV_PATH, "utf-8");
+const tsvRecords: string[][] = parse(tsv, { delimiter: "\t", relax_quotes: true, relax_column_count: true });
+const [tsvHeader, ...tsvRows] = tsvRecords;
+console.log(`TSV columns: ${tsvHeader.join(", ")}`);
+console.log(`Rows: ${tsvRows.length}`);
+
+db.exec(`DROP TABLE IF EXISTS times`);
+db.exec(`
+  CREATE TABLE times (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    warehouse TEXT,
+    parent_type TEXT,
+    item_type TEXT,
+    employee TEXT,
+    op_type TEXT,
+    norm_h REAL,
+    time_spent REAL,
+    time420 REAL,
+    suggested_norm REAL,
+    pct_in_norm REAL,
+    utilization REAL,
+    ops INTEGER,
+    productivity_loss_h REAL,
+    idle_loss_h REAL
+  )
+`);
+
+const insertTime = db.prepare(`
+  INSERT INTO times
+    (warehouse, parent_type, item_type, employee, op_type, norm_h, time_spent, time420,
+     suggested_norm, pct_in_norm, utilization, ops, productivity_loss_h, idle_loss_h)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertManyTimes = db.transaction((rows: string[][]) => {
+  let skipped = 0;
+  for (const row of rows) {
+    if (row.length < 14) {
+      skipped++;
+      continue;
+    }
+    try {
+      insertTime.run(
+        row[0].trim(),                              // warehouse
+        row[1].trim(),                              // parent_type
+        row[2].trim(),                              // item_type
+        row[3].trim(),                              // employee
+        row[4].trim(),                              // op_type (Type)
+        parseRussianDecimal(row[5]),                // norm_h
+        parseRussianDecimal(row[6]),                // time_spent (time30)
+        parseRussianDecimal(row[7]),                // time420
+        parseRussianDecimal(row[8]),                // suggested_norm
+        parseRussianDecimal(row[9]),                // pct_in_norm
+        parseRussianDecimal(row[10]),               // utilization
+        parseInt(row[11].replace(/\s/g, "")) || 0,  // ops
+        parseRussianDecimal(row[12]),               // productivity_loss_h
+        parseRussianDecimal(row[13])                // idle_loss_h
+      );
+    } catch (e) {
+      skipped++;
+    }
+  }
+  return skipped;
+});
+
+const skippedTimes = insertManyTimes(tsvRows);
+const countTimes = db.prepare("SELECT COUNT(*) as c FROM times").get() as { c: number };
+console.log(`Migrated ${countTimes.c} times rows (skipped ${skippedTimes})`);
+
 db.close();
+console.log(`\nDone. Database: ${DB_PATH}`);

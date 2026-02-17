@@ -1,15 +1,61 @@
 .app {
-  max-width: 1200px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 24px;
   font-family: system-ui, -apple-system, sans-serif;
 }
 
-h1 {
+h1, h2 {
   font-size: 1.6rem;
   font-weight: 700;
   margin-bottom: 20px;
   color: #1a1a2e;
+}
+
+.treemap-section {
+  margin-bottom: 48px;
+}
+
+.treemap-section h2 {
+  font-size: 1.4rem;
+}
+
+.chart-and-filters {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.chart-area {
+  flex: 1;
+  min-width: 0;
+}
+
+.filters-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.filter-section h3 {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #334155;
+  margin: 0 0 10px 0;
+}
+
+.filter-section fieldset {
+  margin-bottom: 12px;
+}
+
+.filter-section fieldset:last-child {
+  margin-bottom: 0;
 }
 
 .controls {
@@ -95,6 +141,40 @@ select {
   font-weight: 700;
   margin-bottom: 16px;
   color: #1a1a2e;
+}
+
+.pivot-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.pivot-table-area {
+  flex: 1;
+  min-width: 0;
+}
+
+.pivot-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.pivot-sidebar h3 {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #334155;
+  margin: 0 0 10px 0;
+}
+
+.pivot-sidebar select {
+  width: 100%;
 }
 
 .table-wrapper {
