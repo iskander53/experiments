@@ -9,6 +9,7 @@ const DIMENSION_OPTIONS = [
   "warehouse",
   "customer",
   "employee",
+  "item_type",
   "day",
   "week",
   "month",
@@ -23,6 +24,7 @@ const DIM_LABELS: Record<string, string> = {
   warehouse: "Терминал",
   customer: "Заказчик",
   employee: "Сотрудник",
+  item_type: "Тип товара",
   day: "День",
   week: "Неделя",
   month: "Месяц",
@@ -34,7 +36,7 @@ const DIM_LABELS: Record<string, string> = {
 const FILTER_SECTIONS: { title: string; dims: readonly (typeof DIMENSION_OPTIONS)[number][] }[] = [
   { title: "Время", dims: ["hour", "shift", "day", "week", "month"] },
   { title: "Операции", dims: ["stage", "deviation_category", "deviation"] },
-  { title: "Организация", dims: ["warehouse", "customer", "employee"] },
+  { title: "Организация", dims: ["warehouse", "customer", "employee", "item_type"] },
 ];
 
 
@@ -491,6 +493,8 @@ interface DetailRow {
   quantity: number;
   amount_rub: number;
   employee: string;
+  product_name: string;
+  item_type: string;
 }
 
 interface DetailModalProps {
@@ -526,6 +530,8 @@ function DetailModal({ isOpen, onClose, title, rows, loading }: DetailModalProps
                   <th>Ед.</th>
                   <th>Сумма, ₽</th>
                   <th>Сотрудник</th>
+                  <th>Наименование</th>
+                  <th>Тип товара</th>
                 </tr>
               </thead>
               <tbody>
@@ -539,6 +545,8 @@ function DetailModal({ isOpen, onClose, title, rows, loading }: DetailModalProps
                     <td>{row.quantity}</td>
                     <td>{row.amount_rub?.toLocaleString()}</td>
                     <td>{row.employee}</td>
+                    <td>{row.product_name}</td>
+                    <td>{row.item_type}</td>
                   </tr>
                 ))}
               </tbody>
@@ -568,6 +576,10 @@ function TreemapSection({
   const [data, setData] = useState<DataItem[]>([]);
   const [loading, setLoading] = useState(false);
   
+  // Date range filter
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  
   // Detail modal state
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTitle, setModalTitle] = useState("");
@@ -590,12 +602,14 @@ function TreemapSection({
     if (cats.length > 0) {
       params.set("deviation_category", cats.join(","));
     }
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
     fetch(`/api/data?${params}`)
       .then((r) => r.json())
       .then((d: DataItem[]) => setData(d))
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [selectedDims, measure, selectedCategories, fixedCategories]);
+  }, [selectedDims, measure, selectedCategories, fixedCategories, dateFrom, dateTo]);
 
   const treemap = useMemo(
     () => buildTreemap(data, selectedDims),
@@ -689,6 +703,10 @@ function TreemapSection({
       params.set("deviation_category", cats[0]);
     }
     
+    // Add date range filters
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+    
     fetch(`/api/data/rows?${params}`)
       .then((r) => r.json())
       .then((rows: DetailRow[]) => setModalRows(rows))
@@ -780,6 +798,33 @@ function TreemapSection({
         />
 
         <aside className="filters-sidebar">
+          <section className="filter-section">
+            <h3>Период</h3>
+            <div className="date-range">
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                placeholder="От"
+              />
+              <span className="date-separator">—</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                placeholder="До"
+              />
+            </div>
+            {(dateFrom || dateTo) && (
+              <button
+                className="chip reset"
+                onClick={() => { setDateFrom(""); setDateTo(""); }}
+              >
+                сбросить даты
+              </button>
+            )}
+          </section>
+
           <section className="filter-section">
             <h3>Разрезы</h3>
             {filterSections.map((sec) => (

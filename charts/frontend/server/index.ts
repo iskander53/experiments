@@ -22,7 +22,7 @@ if (existsSync(distPath)) {
 
 const VALID_DIMS = new Set([
   "stage", "deviation_category", "deviation", "warehouse",
-  "customer", "employee", "shift", "hour", "day", "week", "month",
+  "customer", "employee", "item_type", "shift", "hour", "day", "week", "month",
 ]);
 
 // month is computed from day
@@ -44,7 +44,7 @@ app.get("/", (_req, res) => {
 
 app.get("/api/dimensions", (_req, res) => {
   const dims: Record<string, (string | number)[]> = {};
-  const cols = ["stage", "deviation_category", "deviation", "warehouse", "customer", "employee", "shift", "hour", "day", "week", "month"];
+  const cols = ["stage", "deviation_category", "deviation", "warehouse", "customer", "employee", "item_type", "shift", "hour", "day", "week", "month"];
   for (const col of cols) {
     const sel = dimSelect(col);
     const rows = db.prepare(`SELECT DISTINCT ${sel} FROM deviations ORDER BY ${col === "month" ? "1" : col}`).all() as Record<string, string | number>[];
@@ -68,14 +68,27 @@ app.get("/api/data", (req, res) => {
     ? filterCategory.split(",").map((c) => c.trim()).filter((c) => validCategories.has(c))
     : [];
 
+  // Date range filter
+  const dateFrom = req.query.date_from as string | undefined;
+  const dateTo = req.query.date_to as string | undefined;
+
   const groupSelect = groupCols.map((c) => dimSelect(c)).join(", ");
   const groupByStr = groupCols.map((c) => dimGroupBy(c)).join(", ");
-  let query = `SELECT ${groupSelect}, SUM(${safeMeasure}) as value FROM deviations`;
+  let query = `SELECT ${groupSelect}, SUM(${safeMeasure}) as value FROM deviations WHERE 1=1`;
   const params: string[] = [];
+  
   if (filterCats.length > 0) {
     const placeholders = filterCats.map(() => "?").join(", ");
-    query += ` WHERE deviation_category IN (${placeholders})`;
+    query += ` AND deviation_category IN (${placeholders})`;
     params.push(...filterCats);
+  }
+  if (dateFrom) {
+    query += ` AND day >= ?`;
+    params.push(dateFrom);
+  }
+  if (dateTo) {
+    query += ` AND day <= ?`;
+    params.push(dateTo);
   }
   query += ` GROUP BY ${groupByStr} HAVING value > 0 ORDER BY value DESC`;
 
@@ -94,7 +107,8 @@ app.get("/api/data/rows", (req, res) => {
   const filters = req.query as Record<string, string>;
   
   let query = `SELECT datetime, day, week, hour, shift, stage, deviation_category, deviation, 
-               warehouse, customer, deviation_count, quantity, amount_rub, employee 
+               warehouse, customer, deviation_count, quantity, amount_rub, employee,
+               product_name, item_type
                FROM deviations WHERE 1=1`;
   const params: string[] = [];
   
@@ -106,6 +120,7 @@ app.get("/api/data/rows", (req, res) => {
     deviation: "deviation",
     deviation_category: "deviation_category",
     employee: "employee",
+    item_type: "item_type",
     shift: "shift",
   };
   
@@ -114,6 +129,16 @@ app.get("/api/data/rows", (req, res) => {
       query += ` AND ${dimMap[key]} = ?`;
       params.push(value);
     }
+  }
+  
+  // Date range filters
+  if (filters.date_from) {
+    query += ` AND day >= ?`;
+    params.push(filters.date_from);
+  }
+  if (filters.date_to) {
+    query += ` AND day <= ?`;
+    params.push(filters.date_to);
   }
   
   query += ` ORDER BY datetime DESC LIMIT 500`;

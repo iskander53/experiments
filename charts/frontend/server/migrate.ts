@@ -5,7 +5,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CSV_PATH = resolve(__dirname, "../../deviations.csv");
+const CSV_PATH = resolve(__dirname, "../../../BD, KDZ, DWC.csv");
 const TSV_PATH = resolve(__dirname, "../../times.tsv");
 const DB_PATH = resolve(__dirname, "../../deviations.db");
 
@@ -15,12 +15,17 @@ function parseRussianDecimal(value: string): number {
   return parseFloat(value.replace(/\s/g, "").replace(",", "."));
 }
 
-function parseDate(value: string): string {
+function parseDateTime(value: string): string {
   if (!value) return "";
-  const parts = value.trim().split(" ");
-  const [day, month, year] = parts[0].split(".");
-  const iso = `${year}-${month}-${day}`;
-  return parts.length > 1 ? `${iso} ${parts[1]}:00` : iso;
+  // Already ISO-like format: "2026-01-26 17:07:42.017"
+  // Strip milliseconds for consistency
+  return value.split(".")[0];
+}
+
+function parseDay(value: string): string {
+  if (!value) return "";
+  // Format: "2026-01-26 00:00:00.000" -> "2026-01-26"
+  return value.split(" ")[0];
 }
 
 console.log(`Reading CSV from ${CSV_PATH}...`);
@@ -50,7 +55,9 @@ db.exec(`
     deviation_count INTEGER,
     quantity REAL,
     amount_rub REAL,
-    employee TEXT
+    employee TEXT,
+    product_name TEXT,
+    item_type TEXT
   )
 `);
 
@@ -58,33 +65,35 @@ const insert = db.prepare(`
   INSERT INTO deviations
     (datetime, day, week, hour, shift, stage, deviation_category,
      deviation, warehouse, customer, deviation_count, quantity,
-     amount_rub, employee)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     amount_rub, employee, product_name, item_type)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertMany = db.transaction((rows: string[][]) => {
   let skipped = 0;
   for (const row of rows) {
-    if (row.length < 14) {
+    if (row.length < 16) {
       skipped++;
       continue;
     }
     try {
       insert.run(
-        parseDate(row[0]),
-        parseDate(row[1]),
-        parseDate(row[2]),
-        parseInt(row[3]),
-        parseInt(row[4]),
-        row[5].trim(),
-        row[6].trim(),
-        row[7].trim(),
-        row[8].trim(),
-        row[9].trim(),
-        parseInt(row[10]),
-        parseRussianDecimal(row[11]),
-        parseRussianDecimal(row[12]),
-        row[13].trim()
+        parseDateTime(row[0]),           // datetime
+        parseDay(row[1]),                 // day
+        parseDay(row[2]),                 // week
+        parseInt(row[3]) || 0,            // hour
+        parseInt(row[4]) || 0,            // shift
+        row[5].trim(),                    // stage
+        row[6].trim(),                    // deviation_category
+        row[7].trim(),                    // deviation
+        row[8].trim(),                    // warehouse
+        row[9].trim(),                    // customer
+        parseInt(row[10]) || 0,           // deviation_count
+        parseRussianDecimal(row[11]),     // quantity
+        parseRussianDecimal(row[12]),     // amount_rub
+        row[13].trim(),                   // employee (USER)
+        row[14].trim(),                   // product_name
+        row[15].trim()                    // item_type
       );
     } catch (e) {
       skipped++;
