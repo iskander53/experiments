@@ -71,6 +71,12 @@ app.get("/api/data", (req, res) => {
   // Date range filter
   const dateFrom = req.query.date_from as string | undefined;
   const dateTo = req.query.date_to as string | undefined;
+  
+  // Deviation subtype filter
+  const filterDeviation = req.query.deviation as string | undefined;
+  const filterDevs = filterDeviation
+    ? filterDeviation.split(",").map((d) => d.trim()).filter((d) => d)
+    : [];
 
   const groupSelect = groupCols.map((c) => dimSelect(c)).join(", ");
   const groupByStr = groupCols.map((c) => dimGroupBy(c)).join(", ");
@@ -82,6 +88,28 @@ app.get("/api/data", (req, res) => {
     query += ` AND deviation_category IN (${placeholders})`;
     params.push(...filterCats);
   }
+  if (filterDevs.length > 0) {
+    const placeholders = filterDevs.map(() => "?").join(", ");
+    query += ` AND deviation IN (${placeholders})`;
+    params.push(...filterDevs);
+  }
+  
+  // Generic dimension filters - use any valid dimension from VALID_DIMS
+  for (const dim of VALID_DIMS) {
+    // Skip deviation_category and deviation - handled separately above
+    if (dim === "deviation_category" || dim === "deviation") continue;
+    const filterVal = req.query[dim] as string | undefined;
+    if (filterVal) {
+      // Handle month specially (computed column)
+      if (dim === "month") {
+        query += ` AND strftime('%Y-%m', day) = ?`;
+      } else {
+        query += ` AND ${dim} = ?`;
+      }
+      params.push(filterVal);
+    }
+  }
+  
   if (dateFrom) {
     query += ` AND day >= ?`;
     params.push(dateFrom);
@@ -112,21 +140,16 @@ app.get("/api/data/rows", (req, res) => {
                FROM deviations WHERE 1=1`;
   const params: string[] = [];
   
-  // Apply dimension filters (map frontend names to DB column names)
-  const dimMap: Record<string, string> = {
-    stage: "stage",
-    warehouse: "warehouse",
-    customer: "customer",
-    deviation: "deviation",
-    deviation_category: "deviation_category",
-    employee: "employee",
-    item_type: "item_type",
-    shift: "shift",
-  };
-  
+  // Apply dimension filters - use any valid dimension from VALID_DIMS
   for (const [key, value] of Object.entries(filters)) {
-    if (dimMap[key] && value) {
-      query += ` AND ${dimMap[key]} = ?`;
+    if (!value || key === "date_from" || key === "date_to") continue;
+    if (VALID_DIMS.has(key)) {
+      // Handle month specially (computed column)
+      if (key === "month") {
+        query += ` AND strftime('%Y-%m', day) = ?`;
+      } else {
+        query += ` AND ${key} = ?`;
+      }
       params.push(value);
     }
   }
@@ -165,17 +188,36 @@ app.get("/api/pivot", (req, res) => {
     ? filterCategory.split(",").map((c) => c.trim()).filter((c) => validCategories.has(c))
     : [];
 
+  // Warehouse filter
+  const filterWarehouse = req.query.warehouse as string | undefined;
+  
+  // Date range filter
+  const dateFrom = req.query.date_from as string | undefined;
+  const dateTo = req.query.date_to as string | undefined;
+
   const selectMeasures = measures.map((m) => `SUM(${m}) as ${m}`).join(", ");
   const rowSelect = rowDims.map((c) => dimSelect(c)).join(", ");
   const rowGroupBy = rowDims.map((c) => dimGroupBy(c)).join(", ");
   const colSelect = dimSelect(safeCol);
   const colGroupBy = dimGroupBy(safeCol);
-  let query = `SELECT ${rowSelect}, ${colSelect}, ${selectMeasures} FROM deviations`;
+  let query = `SELECT ${rowSelect}, ${colSelect}, ${selectMeasures} FROM deviations WHERE 1=1`;
   const params: string[] = [];
   if (filterCats.length > 0) {
     const placeholders = filterCats.map(() => "?").join(", ");
-    query += ` WHERE deviation_category IN (${placeholders})`;
+    query += ` AND deviation_category IN (${placeholders})`;
     params.push(...filterCats);
+  }
+  if (filterWarehouse) {
+    query += ` AND warehouse = ?`;
+    params.push(filterWarehouse);
+  }
+  if (dateFrom) {
+    query += ` AND day >= ?`;
+    params.push(dateFrom);
+  }
+  if (dateTo) {
+    query += ` AND day <= ?`;
+    params.push(dateTo);
   }
   query += ` GROUP BY ${rowGroupBy}, ${colGroupBy}`;
 

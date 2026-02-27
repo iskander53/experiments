@@ -203,12 +203,37 @@ const fmt = (v: number | undefined) => {
   return new Intl.NumberFormat("ru-RU").format(v);
 };
 
-function PivotTable({ selectedCategories }: { selectedCategories: string[] }) {
+interface PivotTableProps {
+  selectedCategories: string[];
+  globalWarehouse?: string;
+  globalDateFrom?: string;
+  globalDateTo?: string;
+  onCellClick?: (filters: Record<string, string>) => void;
+  hasActiveFilter?: boolean;
+}
+
+function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globalDateTo, onCellClick, hasActiveFilter = false }: PivotTableProps) {
   const [rowDims, setRowDims] = useState<string[]>(["deviation_category", "deviation"]);
-  const [colDim, setColDim] = useState("stage");
+  const [colDim, setColDim] = useState("week");
   const [measures, setMeasures] = useState<string[]>(["deviation_count"]);
   const [rawData, setRawData] = useState<PivotRow[]>([]);
   const [pivotLoading, setPivotLoading] = useState(false);
+  
+  // Detail modal state (for right-click)
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState("");
+  const [modalRows, setModalRows] = useState<DetailRow[]>([]);
+  const [modalLoading, setModalLoading] = useState(false);
+  
+  // Track selected cell for visual highlight
+  const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
+  
+  // Clear selection when filter is cleared externally
+  useEffect(() => {
+    if (!hasActiveFilter) {
+      setSelectedCellId(null);
+    }
+  }, [hasActiveFilter]);
 
   const toggleRowDim = (d: string) => {
     setRowDims((prev) =>
@@ -222,22 +247,33 @@ function PivotTable({ selectedCategories }: { selectedCategories: string[] }) {
     );
   };
 
+  const ALL_MEASURES = useMemo(() => ["deviation_count", "quantity", "amount_rub"], []);
+  
   useEffect(() => {
     setPivotLoading(true);
     const params = new URLSearchParams({
       row: rowDims.join(","),
       col: colDim,
-      measures: measures.join(","),
+      measures: ALL_MEASURES.join(","), // Always fetch all measures for tooltip
     });
     if (selectedCategories.length > 0) {
       params.set("deviation_category", selectedCategories.join(","));
+    }
+    if (globalWarehouse) {
+      params.set("warehouse", globalWarehouse);
+    }
+    if (globalDateFrom) {
+      params.set("date_from", globalDateFrom);
+    }
+    if (globalDateTo) {
+      params.set("date_to", globalDateTo);
     }
     fetch(`/api/pivot?${params}`)
       .then((r) => r.json())
       .then((d: PivotRow[]) => setRawData(d))
       .catch(console.error)
       .finally(() => setPivotLoading(false));
-  }, [rowDims, colDim, measures, selectedCategories]);
+  }, [rowDims, colDim, measures, selectedCategories, globalWarehouse, globalDateFrom, globalDateTo]);
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -292,9 +328,9 @@ function PivotTable({ selectedCategories }: { selectedCategories: string[] }) {
           }
         }
 
-        // Accumulate measures at this level
+        // Accumulate ALL measures at this level (for tooltip)
         if (!tree[key].cells[cv]) tree[key].cells[cv] = {};
-        for (const m of measures) {
+        for (const m of ALL_MEASURES) {
           tree[key].cells[cv][m] = (tree[key].cells[cv][m] || 0) + ((row[m] as number) || 0);
         }
       }
@@ -324,7 +360,7 @@ function PivotTable({ selectedCategories }: { selectedCategories: string[] }) {
       roots: sortedRoots,
       colValues: sortValues([...colSet], [colDim]),
     };
-  }, [rawData, rowDims, colDim, measures]);
+  }, [rawData, rowDims, colDim, ALL_MEASURES]);
 
   // Expand all parent nodes by default when tree changes
   useEffect(() => {
@@ -366,9 +402,26 @@ function PivotTable({ selectedCategories }: { selectedCategories: string[] }) {
             <thead>
               <tr>
                 <th className="row-header">{rowDims.map((d) => DIM_LABELS[d] ?? d).join(" → ")} \ {DIM_LABELS[colDim] ?? colDim}</th>
-                {colValues.map((cv) => (
-                  <th key={cv} colSpan={measures.length}>{cv}</th>
-                ))}
+                {colValues.map((cv) => {
+                  const colHeaderId = `col|||${cv}`;
+                  const isColSelected = selectedCellId === colHeaderId;
+                  const handleColClick = () => {
+                    if (!onCellClick) return;
+                    const filters: Record<string, string> = { [colDim]: cv };
+                    setSelectedCellId(colHeaderId);
+                    onCellClick(filters);
+                  };
+                  return (
+                    <th
+                      key={cv}
+                      colSpan={measures.length}
+                      className={`col-header clickable ${isColSelected ? "selected" : ""}`}
+                      onClick={handleColClick}
+                    >
+                      {cv}
+                    </th>
+                  );
+                })}
               </tr>
               {measures.length > 1 && (
                 <tr>
@@ -402,8 +455,61 @@ function PivotTable({ selectedCategories }: { selectedCategories: string[] }) {
                     {colValues.map((cv) =>
                       measures.map((m) => {
                         const val = node.cells[cv]?.[m];
+                        const cellData = node.cells[cv];
+                        const tooltipText = cellData
+                          ? `Кол-во откл.: ${fmt(cellData.deviation_count || 0)}\nКол-во шт: ${fmt(cellData.quantity || 0)}\nСумма: ${fmt(cellData.amount_rub || 0)} ₽`
+                          : "";
+                        
+                        const cellId = `${key}|||${cv}|||${m}`;
+                        const isSelected = selectedCellId === cellId;
+                        
+                        const handleCellClick = () => {
+                          if (!val || !onCellClick) return;
+                          const filters: Record<string, string> = {};
+                          const parts = key.split("|||");
+                          parts.forEach((v, i) => {
+                            if (rowDims[i]) filters[rowDims[i]] = v;
+                          });
+                          filters[colDim] = cv;
+                          setSelectedCellId(cellId);
+                          onCellClick(filters);
+                        };
+                        
+                        const handleCellRightClick = (e: React.MouseEvent) => {
+                          e.preventDefault();
+                          if (!val) return;
+                          const filters: Record<string, string> = {};
+                          const parts = key.split("|||");
+                          parts.forEach((v, i) => {
+                            if (rowDims[i]) filters[rowDims[i]] = v;
+                          });
+                          filters[colDim] = cv;
+                          if (globalWarehouse) filters.warehouse = globalWarehouse;
+                          if (globalDateFrom) filters.date_from = globalDateFrom;
+                          if (globalDateTo) filters.date_to = globalDateTo;
+                          
+                          const labelParts = [...parts, cv];
+                          setModalTitle(labelParts.join(" / "));
+                          setModalRows([]);
+                          setModalOpen(true);
+                          setModalLoading(true);
+                          
+                          const params = new URLSearchParams(filters);
+                          fetch(`/api/data/rows?${params}`)
+                            .then((r) => r.json())
+                            .then((rows: DetailRow[]) => setModalRows(rows))
+                            .catch(console.error)
+                            .finally(() => setModalLoading(false));
+                        };
+                        
                         return (
-                          <td key={`${cv}-${m}`} className="cell">
+                          <td
+                            key={`${cv}-${m}`}
+                            className={`cell ${val ? "clickable" : ""} ${isSelected ? "selected" : ""}`}
+                            title={tooltipText}
+                            onClick={handleCellClick}
+                            onContextMenu={handleCellRightClick}
+                          >
                             {val ? fmt(val) : ""}
                           </td>
                         );
@@ -464,6 +570,14 @@ function PivotTable({ selectedCategories }: { selectedCategories: string[] }) {
           </section>
         </aside>
       </div>
+
+      <DetailModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title={modalTitle}
+        rows={modalRows}
+        loading={modalLoading}
+      />
     </div>
   );
 }
@@ -476,6 +590,10 @@ interface TreemapSectionProps {
   defaultMeasure?: string;
   fixedCategories?: string[];  // If set, category filter is hidden and these are used
   showCategoryFilter?: boolean;
+  globalWarehouse?: string;
+  globalDateFrom?: string;
+  globalDateTo?: string;
+  pivotFilters?: Record<string, string>;
 }
 
 interface DetailRow {
@@ -569,16 +687,29 @@ function TreemapSection({
   defaultMeasure = "deviation_count",
   fixedCategories,
   showCategoryFilter = true,
+  globalWarehouse,
+  globalDateFrom,
+  globalDateTo,
+  pivotFilters = {},
 }: TreemapSectionProps) {
   const [selectedDims, setSelectedDims] = useState<string[]>(defaultDims);
   const [measure, setMeasure] = useState(defaultMeasure);
   const [selectedCategories, setSelectedCategories] = useState<string[]>(fixedCategories || []);
+  const [selectedDeviations, setSelectedDeviations] = useState<string[]>([]);
+  const [deviationOptions, setDeviationOptions] = useState<string[]>([]);
   const [data, setData] = useState<DataItem[]>([]);
   const [loading, setLoading] = useState(false);
   
-  // Date range filter
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Fetch deviation options once
+  useEffect(() => {
+    fetch("/api/dimensions")
+      .then((r) => r.json())
+      .then((dims: Record<string, string[]>) => {
+        const devs = dims.deviation?.filter((d) => d && d !== "Не определено") || [];
+        setDeviationOptions(devs);
+      })
+      .catch(console.error);
+  }, []);
   
   // Detail modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -586,8 +717,6 @@ function TreemapSection({
   const [modalRows, setModalRows] = useState<DetailRow[]>([]);
   const [modalLoading, setModalLoading] = useState(false);
   
-  // Track last hovered leaf node for right-click
-  const lastHoveredLeaf = useRef<{id: string, label: string} | null>(null);
 
   useEffect(() => {
     if (selectedDims.length === 0) return;
@@ -602,14 +731,26 @@ function TreemapSection({
     if (cats.length > 0) {
       params.set("deviation_category", cats.join(","));
     }
-    if (dateFrom) params.set("date_from", dateFrom);
-    if (dateTo) params.set("date_to", dateTo);
+    if (selectedDeviations.length > 0) {
+      params.set("deviation", selectedDeviations.join(","));
+    }
+    if (globalWarehouse) {
+      params.set("warehouse", globalWarehouse);
+    }
+    // Add pivot table filters
+    for (const [key, value] of Object.entries(pivotFilters)) {
+      if (value && !params.has(key)) {
+        params.set(key, value);
+      }
+    }
+    if (globalDateFrom) params.set("date_from", globalDateFrom);
+    if (globalDateTo) params.set("date_to", globalDateTo);
     fetch(`/api/data?${params}`)
       .then((r) => r.json())
       .then((d: DataItem[]) => setData(d))
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [selectedDims, measure, selectedCategories, fixedCategories, dateFrom, dateTo]);
+  }, [selectedDims, measure, selectedCategories, fixedCategories, selectedDeviations, globalWarehouse, pivotFilters, globalDateFrom, globalDateTo]);
 
   const treemap = useMemo(
     () => buildTreemap(data, selectedDims),
@@ -639,6 +780,12 @@ function TreemapSection({
     );
   };
 
+  const toggleDeviation = (dev: string) => {
+    setSelectedDeviations((prev) =>
+      prev.includes(dev) ? prev.filter((d) => d !== dev) : [...prev, dev]
+    );
+  };
+
   // Build a set of leaf node IDs for quick lookup (using same separator as makeId: "|||")
   const leafNodeIds = useMemo(() => {
     const leaves = new Set<string>();
@@ -655,67 +802,83 @@ function TreemapSection({
     return leaves;
   }, [data, selectedDims]);
 
-  // Handle hover on treemap - track leaf nodes for right-click
-  const handleTreemapHover = (event: any) => {
-    const point = event.points?.[0];
-    if (!point) {
-      lastHoveredLeaf.current = null;
-      return;
+  // Find the treemap point from a native DOM event by walking up the target's __data__
+  const getPointFromEvent = (e: MouseEvent): {id: string, label: string} | null => {
+    let target = e.target as any;
+    while (target && target !== e.currentTarget) {
+      const data = target.__data__;
+      if (data) {
+        // Plotly treemap stores data differently depending on version
+        const pointId = data.id ?? data.data?.id;
+        const pointLabel = data.label ?? data.data?.label;
+        if (pointId && leafNodeIds.has(pointId)) {
+          return { id: pointId, label: pointLabel || pointId };
+        }
+      }
+      target = target.parentNode;
     }
-    
-    const pointId = point.id as string;
-    if (!pointId || !leafNodeIds.has(pointId)) {
-      lastHoveredLeaf.current = null;
-      return;
-    }
-    
-    lastHoveredLeaf.current = {
-      id: pointId,
-      label: point.label || pointId,
-    };
+    return null;
   };
 
-  // Handle right-click on treemap - show details for leaf node
-  const handleContextMenu = (e: React.MouseEvent) => {
-    if (!lastHoveredLeaf.current) return;
+  // Attach native contextmenu listener to Plotly's container for reliable right-click
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  
+  useEffect(() => {
+    const container = chartContainerRef.current;
+    if (!container) return;
     
-    e.preventDefault();
-    
-    const { id, label } = lastHoveredLeaf.current;
-    const parts = id.split("|||").filter(Boolean);
-    
-    setModalRows([]);
-    setModalTitle(label);
-    setModalOpen(true);
-    setModalLoading(true);
-    
-    // Build filter params from the path
-    const params = new URLSearchParams();
-    parts.forEach((value, idx) => {
-      if (selectedDims[idx] && value) {
-        params.set(selectedDims[idx], value);
+    const handler = (e: MouseEvent) => {
+      const point = getPointFromEvent(e);
+      if (!point) return;
+      
+      e.preventDefault();
+      
+      const { id, label } = point;
+      const parts = id.split("|||").filter(Boolean);
+      
+      setModalRows([]);
+      setModalTitle(label);
+      setModalOpen(true);
+      setModalLoading(true);
+      
+      const params = new URLSearchParams();
+      parts.forEach((value, idx) => {
+        if (selectedDims[idx] && value) {
+          params.set(selectedDims[idx], value);
+        }
+      });
+      
+      const cats = fixedCategories || selectedCategories;
+      if (cats.length > 0) {
+        params.set("deviation_category", cats[0]);
       }
-    });
+      if (selectedDeviations.length > 0) {
+        params.set("deviation", selectedDeviations[0]);
+      }
+      if (globalWarehouse) {
+        params.set("warehouse", globalWarehouse);
+      }
+      for (const [key, value] of Object.entries(pivotFilters)) {
+        if (value && !params.has(key)) {
+          params.set(key, value);
+        }
+      }
+      if (globalDateFrom) params.set("date_from", globalDateFrom);
+      if (globalDateTo) params.set("date_to", globalDateTo);
+      
+      fetch(`/api/data/rows?${params}`)
+        .then((r) => r.json())
+        .then((rows: DetailRow[]) => setModalRows(rows))
+        .catch((err) => {
+          console.error("Failed to fetch rows:", err);
+          setModalRows([]);
+        })
+        .finally(() => setModalLoading(false));
+    };
     
-    // Add category filter if active
-    const cats = fixedCategories || selectedCategories;
-    if (cats.length > 0) {
-      params.set("deviation_category", cats[0]);
-    }
-    
-    // Add date range filters
-    if (dateFrom) params.set("date_from", dateFrom);
-    if (dateTo) params.set("date_to", dateTo);
-    
-    fetch(`/api/data/rows?${params}`)
-      .then((r) => r.json())
-      .then((rows: DetailRow[]) => setModalRows(rows))
-      .catch((err) => {
-        console.error("Failed to fetch rows:", err);
-        setModalRows([]);
-      })
-      .finally(() => setModalLoading(false));
-  };
+    container.addEventListener("contextmenu", handler);
+    return () => container.removeEventListener("contextmenu", handler);
+  }); // intentionally no deps — always uses latest closure values
 
   return (
     <div className="treemap-section">
@@ -726,7 +889,7 @@ function TreemapSection({
           {loading && <p className="loading">Загрузка...</p>}
 
           {!loading && data.length > 0 && (
-            <div className="chart-container" onContextMenu={handleContextMenu}>
+            <div className="chart-container" ref={chartContainerRef}>
               <Plot
                 key={selectedDims.join(",") + measure}
                 data={[
@@ -782,7 +945,6 @@ function TreemapSection({
                   boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
                   border: "1px solid #e0e0e0",
                 }}
-                onHover={handleTreemapHover}
               />
               <p className="context-hint">Правый клик на ячейке нижнего уровня — показать детали</p>
             </div>
@@ -798,33 +960,6 @@ function TreemapSection({
         />
 
         <aside className="filters-sidebar">
-          <section className="filter-section">
-            <h3>Период</h3>
-            <div className="date-range">
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                placeholder="От"
-              />
-              <span className="date-separator">—</span>
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                placeholder="До"
-              />
-            </div>
-            {(dateFrom || dateTo) && (
-              <button
-                className="chip reset"
-                onClick={() => { setDateFrom(""); setDateTo(""); }}
-              >
-                сбросить даты
-              </button>
-            )}
-          </section>
-
           <section className="filter-section">
             <h3>Разрезы</h3>
             {filterSections.map((sec) => (
@@ -877,6 +1012,26 @@ function TreemapSection({
               )}
             </section>
           )}
+
+          <section className="filter-section">
+            <h3>Подтип отклонения</h3>
+            <div className="chips">
+              {deviationOptions.map((dev) => (
+                <button
+                  key={dev}
+                  className={`chip ${selectedDeviations.includes(dev) ? "active" : ""}`}
+                  onClick={() => toggleDeviation(dev)}
+                >
+                  {dev}
+                </button>
+              ))}
+            </div>
+            {selectedDeviations.length > 0 && (
+              <button className="chip reset" onClick={() => setSelectedDeviations([])}>
+                сбросить
+              </button>
+            )}
+          </section>
         </aside>
       </div>
     </div>
@@ -1379,25 +1534,136 @@ function StackedBarChart() {
   );
 }
 
+function getDefaultDateRange() {
+  const today = new Date();
+  const threeMonthsAgo = new Date(today);
+  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+  return {
+    from: threeMonthsAgo.toISOString().split("T")[0],
+    to: today.toISOString().split("T")[0],
+  };
+}
+
 function App() {
   const [selectedCategories] = useState<string[]>([]);
+  const [currentPage, setCurrentPage] = useState<"deviations" | "times">("deviations");
+  
+  // Load warehouse from localStorage
+  const [globalWarehouse, setGlobalWarehouse] = useState(() => {
+    return localStorage.getItem("globalWarehouse") || "";
+  });
+  const [warehouseOptions, setWarehouseOptions] = useState<string[]>([]);
+  const [pivotFilters, setPivotFilters] = useState<Record<string, string>>({});
+  
+  // Global date range filter (default: last 3 months)
+  const defaultDates = getDefaultDateRange();
+  const [globalDateFrom, setGlobalDateFrom] = useState(defaultDates.from);
+  const [globalDateTo, setGlobalDateTo] = useState(defaultDates.to);
+
+  // Save warehouse to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem("globalWarehouse", globalWarehouse);
+  }, [globalWarehouse]);
+
+  useEffect(() => {
+    fetch("/api/dimensions")
+      .then((r) => r.json())
+      .then((dims: Record<string, string[]>) => {
+        const whs = dims.warehouse?.filter((w) => w) || [];
+        setWarehouseOptions(whs);
+      })
+      .catch(console.error);
+  }, []);
+
+  const handlePivotCellClick = (filters: Record<string, string>) => {
+    setPivotFilters(filters);
+  };
 
   return (
     <div className="app">
-      <TreemapSection
-        title="Отклонения — Treemap"
-        filterSections={FILTER_SECTIONS}
-        measureOptions={MEASURE_OPTIONS}
-        defaultDims={["stage"]}
-        defaultMeasure="deviation_count"
-        showCategoryFilter={true}
-      />
+      <div className="global-filters">
+        <nav className="page-nav">
+          <button
+            className={`nav-tab ${currentPage === "deviations" ? "active" : ""}`}
+            onClick={() => setCurrentPage("deviations")}
+          >
+            Отклонения
+          </button>
+          <button
+            className={`nav-tab ${currentPage === "times" ? "active" : ""}`}
+            onClick={() => setCurrentPage("times")}
+          >
+            Время
+          </button>
+        </nav>
 
-      <TimesTreemapSection />
+        <div className="global-filters-right">
+          <div className="global-date-filter">
+            <label>Период:</label>
+            <input
+              type="date"
+              value={globalDateFrom}
+              onChange={(e) => setGlobalDateFrom(e.target.value)}
+            />
+            <span className="date-separator">—</span>
+            <input
+              type="date"
+              value={globalDateTo}
+              onChange={(e) => setGlobalDateTo(e.target.value)}
+            />
+          </div>
+          
+          <div className="global-warehouse-filter">
+            <label>Терминал:</label>
+            <select value={globalWarehouse} onChange={(e) => setGlobalWarehouse(e.target.value)}>
+              <option value="">Все</option>
+              {warehouseOptions.map((wh) => (
+                <option key={wh} value={wh}>{wh}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
 
-      <StackedBarChart />
+      {currentPage === "deviations" && (
+        <>
+          <PivotTable
+            selectedCategories={selectedCategories}
+            globalWarehouse={globalWarehouse}
+            globalDateFrom={globalDateFrom}
+            globalDateTo={globalDateTo}
+            onCellClick={handlePivotCellClick}
+            hasActiveFilter={Object.keys(pivotFilters).length > 0}
+          />
 
-      <PivotTable selectedCategories={selectedCategories} />
+          {Object.keys(pivotFilters).length > 0 && (
+            <div className="pivot-filter-badge">
+              <span>Фильтр из таблицы: {Object.entries(pivotFilters).map(([k, v]) => `${DIM_LABELS[k] || k}=${v}`).join(", ")}</span>
+              <button onClick={() => setPivotFilters({})}>✕</button>
+            </div>
+          )}
+
+          <TreemapSection
+            title="Отклонения — Treemap"
+            filterSections={FILTER_SECTIONS}
+            measureOptions={MEASURE_OPTIONS}
+            defaultDims={["stage"]}
+            defaultMeasure="deviation_count"
+            showCategoryFilter={true}
+            globalWarehouse={globalWarehouse}
+            globalDateFrom={globalDateFrom}
+            globalDateTo={globalDateTo}
+            pivotFilters={pivotFilters}
+          />
+        </>
+      )}
+
+      {currentPage === "times" && (
+        <>
+          <TimesTreemapSection />
+          <StackedBarChart />
+        </>
+      )}
     </div>
   );
 }

@@ -1,31 +1,44 @@
-# Product Requirements Document
+Goal
+To quickly experiment with data vizualizations
 
-## Overview
+Architecture
+Mostly frontend, backed only serves data
+We will have an sqllite db built from a csv
 
-<!-- Describe the product or feature at a high level. -->
+Frontend
+We will build different charts on this data
 
-## Goals
+Overall data
+Dimensions	Время	[Абсолютное / Час / Смена / День / Неделя / Месяц / Квартал / Год]
+разрезы	Заказчик	
+	Склад	
+	Зона	[Вход / Выход / Зона отгрузки]
+	Этап	Разгрузка / Приемка / Размещение / 
+	Тип товара	
+	Сотрудник	
+	Тип отклонения:	[Временное / Количественное / Качественное]
+		
+Measures	Событие	
+метрики	Шт	
+		
+	Время операции	
+	Нормативное время	
+	Время простоя	
+		
+	Стоимость	
+		
+	Потери во времени	за счет отклонений
+	Потери в деньгах	за счет отклонений
+		
+Derivative measures	Производительность	Время / Нормативное время
+производные метрики	Утилизация	Время операции / (Время операции + Время простоя)
+	Опоздания	% Время операции < Нормативное время
 
-<!-- List the primary goals and objectives. -->
 
-## Requirements
+Frontend
+Charts — recharts
+treemap
 
-### Functional Requirements
+when building treemap — dimensions should be selectable (multiselect)
+measure should be selectable 
 
-<!-- Detail what the product should do. -->
-
-### Non-Functional Requirements
-
-<!-- Performance, scalability, security, etc. -->
-
-## User Stories
-
-<!-- Describe key user stories or use cases. -->
-
-## Success Metrics
-
-<!-- How will success be measured? -->
-
-## Timeline
-
-<!-- Key milestones and deadlines. -->
