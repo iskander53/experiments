@@ -203,18 +203,129 @@ const fmt = (v: number | undefined) => {
   return new Intl.NumberFormat("ru-RU").format(v);
 };
 
+interface DeviationsSummaryChartProps {
+  colDim: string;
+  globalWarehouse?: string;
+  globalDateFrom?: string;
+  globalDateTo?: string;
+}
+
+function DeviationsSummaryChart({ colDim, globalWarehouse, globalDateFrom, globalDateTo }: DeviationsSummaryChartProps) {
+  const [data, setData] = useState<{ label: string; deviation_count: number; amount_rub: number }[]>([]);
+
+  useEffect(() => {
+    const params = new URLSearchParams({
+      group_by: colDim,
+      measure: "deviation_count",
+    });
+    if (globalWarehouse) params.set("warehouse", globalWarehouse);
+    if (globalDateFrom) params.set("date_from", globalDateFrom);
+    if (globalDateTo) params.set("date_to", globalDateTo);
+
+    // Fetch both measures in parallel
+    const paramsAmount = new URLSearchParams(params);
+    paramsAmount.set("measure", "amount_rub");
+
+    Promise.all([
+      fetch(`/api/data?${params}`).then((r) => r.json()),
+      fetch(`/api/data?${paramsAmount}`).then((r) => r.json()),
+    ])
+      .then(([countRows, amountRows]: [any[], any[]]) => {
+        const amountMap = new Map<string, number>();
+        for (const row of amountRows) {
+          amountMap.set(String(row[colDim] ?? row.name ?? ""), row.value || 0);
+        }
+        const merged = countRows.map((row: any) => {
+          const label = String(row[colDim] ?? row.name ?? "");
+          return {
+            label,
+            deviation_count: row.value || 0,
+            amount_rub: amountMap.get(label) || 0,
+          };
+        });
+        // Sort by label (chronological for dates)
+        merged.sort((a, b) => a.label.localeCompare(b.label));
+        setData(merged);
+      })
+      .catch(console.error);
+  }, [colDim, globalWarehouse, globalDateFrom, globalDateTo]);
+
+  if (data.length === 0) return null;
+
+  const labels = data.map((d) => d.label);
+  const counts = data.map((d) => d.deviation_count);
+  const amounts = data.map((d) => d.amount_rub);
+
+  return (
+    <div className="summary-chart-section">
+      <Plot
+        data={[
+          {
+            type: "bar",
+            x: labels,
+            y: counts,
+            name: "Кол-во отклонений",
+            marker: { color: "#3b82f6" },
+            yaxis: "y",
+          },
+          {
+            type: "scatter",
+            mode: "lines+markers",
+            x: labels,
+            y: amounts,
+            name: "Сумма, ₽",
+            line: { color: "#ef4444", width: 2 },
+            marker: { size: 5 },
+            yaxis: "y2",
+          },
+        ]}
+        layout={{
+          height: 350,
+          margin: { l: 60, r: 60, t: 20, b: 60 },
+          paper_bgcolor: "transparent",
+          plot_bgcolor: "transparent",
+          font: { family: "Inter, system-ui, sans-serif" },
+          xaxis: {
+            title: { text: DIM_LABELS[colDim] ?? colDim },
+            tickangle: labels.length > 15 ? -45 : 0,
+          },
+          yaxis: {
+            title: { text: "Кол-во отклонений" },
+            side: "left",
+          },
+          yaxis2: {
+            title: { text: "Сумма, ₽" },
+            side: "right",
+            overlaying: "y",
+          },
+          legend: {
+            orientation: "h",
+            y: 1.12,
+            x: 0.5,
+            xanchor: "center",
+          },
+          bargap: 0.15,
+        }}
+        config={{ displayModeBar: false, responsive: true }}
+        style={{ width: "100%", borderRadius: "12px", boxShadow: "0 2px 8px rgba(0,0,0,0.1)", border: "1px solid #e0e0e0", background: "white" }}
+      />
+    </div>
+  );
+}
+
 interface PivotTableProps {
   selectedCategories: string[];
   globalWarehouse?: string;
   globalDateFrom?: string;
   globalDateTo?: string;
+  colDim: string;
+  onColDimChange: (dim: string) => void;
   onCellClick?: (filters: Record<string, string>) => void;
   hasActiveFilter?: boolean;
 }
 
-function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globalDateTo, onCellClick, hasActiveFilter = false }: PivotTableProps) {
+function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globalDateTo, colDim, onColDimChange, onCellClick, hasActiveFilter = false }: PivotTableProps) {
   const [rowDims, setRowDims] = useState<string[]>(["deviation_category", "deviation"]);
-  const [colDim, setColDim] = useState("week");
   const [measures, setMeasures] = useState<string[]>(["deviation_count"]);
   const [rawData, setRawData] = useState<PivotRow[]>([]);
   const [pivotLoading, setPivotLoading] = useState(false);
@@ -394,6 +505,12 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
 
       <div className="pivot-layout">
         <div className="pivot-table-area">
+          <DeviationsSummaryChart
+            colDim={colDim}
+            globalWarehouse={globalWarehouse}
+            globalDateFrom={globalDateFrom}
+            globalDateTo={globalDateTo}
+          />
           {pivotLoading ? (
             <p className="loading">Загрузка...</p>
           ) : (
@@ -461,7 +578,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
                           : "";
                         
                         const cellId = `${key}|||${cv}|||${m}`;
-                        const isSelected = selectedCellId === cellId;
+                        const isSelected = selectedCellId === cellId || selectedCellId === `col|||${cv}`;
                         
                         const handleCellClick = () => {
                           if (!val || !onCellClick) return;
@@ -527,7 +644,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
         <aside className="pivot-sidebar">
           <section className="filter-section">
             <h3>Строки</h3>
-            {FILTER_SECTIONS.map((sec) => (
+            {FILTER_SECTIONS.filter((sec) => sec.title !== "Время").map((sec) => (
               <fieldset key={sec.title}>
                 <legend>{sec.title}</legend>
                 <div className="chips">
@@ -547,27 +664,13 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
 
           <section className="filter-section">
             <h3>Столбцы</h3>
-            <select value={colDim} onChange={(e) => setColDim(e.target.value)}>
+            <select value={colDim} onChange={(e) => onColDimChange(e.target.value)}>
               {DIMENSION_OPTIONS.map((d) => (
                 <option key={d} value={d}>{DIM_LABELS[d] ?? d}</option>
               ))}
             </select>
           </section>
 
-          <section className="filter-section">
-            <h3>Метрики</h3>
-            <div className="chips">
-              {MEASURE_OPTIONS.map((m) => (
-                <button
-                  key={m.value}
-                  className={`chip ${measures.includes(m.value) ? "active" : ""}`}
-                  onClick={() => toggleMeasure(m.value)}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-          </section>
         </aside>
       </div>
 
@@ -1554,6 +1657,7 @@ function App() {
   });
   const [warehouseOptions, setWarehouseOptions] = useState<string[]>([]);
   const [pivotFilters, setPivotFilters] = useState<Record<string, string>>({});
+  const [colDim, setColDim] = useState("week");
   
   // Global date range filter (default: last 3 months)
   const defaultDates = getDefaultDateRange();
@@ -1632,6 +1736,8 @@ function App() {
             globalWarehouse={globalWarehouse}
             globalDateFrom={globalDateFrom}
             globalDateTo={globalDateTo}
+            colDim={colDim}
+            onColDimChange={setColDim}
             onCellClick={handlePivotCellClick}
             hasActiveFilter={Object.keys(pivotFilters).length > 0}
           />
@@ -1647,7 +1753,7 @@ function App() {
             title="Отклонения — Treemap"
             filterSections={FILTER_SECTIONS}
             measureOptions={MEASURE_OPTIONS}
-            defaultDims={["stage"]}
+            defaultDims={["customer", "stage", "deviation_category", "deviation"]}
             defaultMeasure="deviation_count"
             showCategoryFilter={true}
             globalWarehouse={globalWarehouse}

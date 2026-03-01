@@ -235,6 +235,11 @@ select {
   width: 100%;
 }
 
+/* Summary chart */
+.summary-chart-section {
+  margin-bottom: 24px;
+}
+
 /* Pivot table */
 .pivot-section {
   margin-top: 48px;
