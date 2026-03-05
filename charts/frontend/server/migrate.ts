@@ -5,7 +5,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CSV_PATH = resolve(__dirname, "../../../BD, KDZ, DWC 7.csv");
+const CSV_PATH = resolve(__dirname, "../../../BD, KDZ, DWC 10.csv");
 const TSV_PATH = resolve(__dirname, "../../times.tsv");
 const DB_PATH = resolve(__dirname, "../../deviations.db");
 
