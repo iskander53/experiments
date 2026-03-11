@@ -50,6 +50,29 @@
   gap: 10px;
 }
 
+.apply-filters-btn {
+  padding: 8px 20px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #e0e0e0;
+  color: #999;
+  cursor: not-allowed;
+  transition: all 0.15s ease;
+}
+
+.apply-filters-btn.changed {
+  background: #3b82f6;
+  color: white;
+  border-color: #3b82f6;
+  cursor: pointer;
+}
+
+.apply-filters-btn.changed:hover {
+  background: #2563eb;
+}
+
 .global-warehouse-filter label {
   font-weight: 600;
   color: #555;
@@ -514,6 +537,21 @@ tbody tr:hover td.row-label {
   color: #334155;
   position: sticky;
   top: 0;
+}
+
+.detail-table th.sortable-th {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.detail-table th.sortable-th:hover {
+  background: #e2e8f0;
+}
+
+.sort-arrow {
+  font-size: 0.7em;
+  color: #3b82f6;
 }
 
 .detail-table tbody tr:hover {

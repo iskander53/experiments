@@ -16,11 +16,13 @@
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
     "csv-parse": "^6.1.0",
+    "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "plotly.js": "^3.3.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-plotly.js": "^2.6.0"
+    "react-plotly.js": "^2.6.0",
+    "snowflake-sdk": "^2.3.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

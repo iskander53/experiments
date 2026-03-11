@@ -4,15 +4,29 @@ import Database from "better-sqlite3";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
+import { config } from "dotenv";
+import { ensureCache, aggregateRows, filterRows, pivotAggregate } from "./defects-cache.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = resolve(__dirname, "../../deviations.db");
+config({ path: resolve(__dirname, "../.env") });
 
+const USE_SNOWFLAKE = process.env.SNOWFLAKE_ACCOUNT && process.env.SNOWFLAKE_ACCOUNT !== "your_account";
+console.log(`[Config] Data source: ${USE_SNOWFLAKE ? "Snowflake" : "SQLite"}`);
+
+const DB_PATH = resolve(__dirname, "../../deviations.db");
 const db = new Database(DB_PATH, { readonly: true });
 db.pragma("journal_mode = WAL");
 
 const app = express();
 app.use(cors());
+app.use((req, _res, next) => {
+  const start = Date.now();
+  _res.on("finish", () => {
+    const ms = Date.now() - start;
+    if (req.path.startsWith("/api/")) console.log(`[${req.method}] ${req.path} ${ms}ms`);
+  });
+  next();
+});
 
 // Serve built frontend in production
 const distPath = resolve(__dirname, "../dist");
@@ -35,6 +49,7 @@ function dimGroupBy(col: string): string {
 
 const VALID_MEASURES = new Set(["deviation_count", "quantity", "amount_rub"]);
 
+
 app.get("/", (_req, res) => {
   if (existsSync(distPath)) {
     return res.sendFile(join(distPath, "index.html"));
@@ -42,18 +57,21 @@ app.get("/", (_req, res) => {
   res.json({ ok: true, message: "Charts API. Run frontend: npm run dev. Endpoints: /api/dimensions, /api/data, /api/pivot" });
 });
 
+const STATIC_DIMS: Record<string, (string | number)[]> = {
+  stage: ["Неизвестно", "Отгрузка ГМ", "Подбор", "Приемка", "Размещение", "Размещение коробов", "Сортировка", "Упаковка", "Хранение", "Экспертиза"],
+  deviation_category: ["Брак на складском хранении", "Нарушение сроков", "Не определено", "Несогласие со стоимостью", "По времени", "По качеству", "По количеству", "Повреждения"],
+  deviation: ["Брак на складском хранении", "Нарушение сроков", "Не было движений 30+ дней", "Не определено", "Несогласие со стоимостью", "Опоздание", "Пересорт", "Повреждения", "излишек", "недостача", "повреждение"],
+  warehouse: ["BD1", "DWC", "K40", "K41", "KBD", "KDZ", "KTH"],
+  item_type: ["1CRT", "4LARGE", "5GLASS", "6B", "7BUM", "BIG", "BOX", "CURVE", "NORMAL", "OIL", "SIN", "SMALL", "UNKNOWN"],
+  shift: [1, 2],
+  hour: Array.from({ length: 24 }, (_, i) => i),
+};
+
 app.get("/api/dimensions", (_req, res) => {
-  const dims: Record<string, (string | number)[]> = {};
-  const cols = ["stage", "deviation_category", "deviation", "warehouse", "customer", "employee", "item_type", "shift", "hour", "day", "week", "month"];
-  for (const col of cols) {
-    const sel = dimSelect(col);
-    const rows = db.prepare(`SELECT DISTINCT ${sel} FROM deviations ORDER BY ${col === "month" ? "1" : col}`).all() as Record<string, string | number>[];
-    dims[col] = rows.map((r) => r[col] ?? r["month"] ?? "");
-  }
-  res.json(dims);
+  res.json(STATIC_DIMS);
 });
 
-app.get("/api/data", (req, res) => {
+app.get("/api/data", async (req, res) => {
   const groupBy = (req.query.group_by as string) || "stage";
   const measure = (req.query.measure as string) || "deviation_count";
 
@@ -78,99 +96,99 @@ app.get("/api/data", (req, res) => {
     ? filterDeviation.split(",").map((d) => d.trim()).filter((d) => d)
     : [];
 
-  const groupSelect = groupCols.map((c) => dimSelect(c)).join(", ");
-  const groupByStr = groupCols.map((c) => dimGroupBy(c)).join(", ");
-  let query = `SELECT ${groupSelect}, SUM(${safeMeasure}) as value FROM deviations WHERE 1=1`;
-  const params: string[] = [];
-  
-  if (filterCats.length > 0) {
-    const placeholders = filterCats.map(() => "?").join(", ");
-    query += ` AND deviation_category IN (${placeholders})`;
-    params.push(...filterCats);
-  }
-  if (filterDevs.length > 0) {
-    const placeholders = filterDevs.map(() => "?").join(", ");
-    query += ` AND deviation IN (${placeholders})`;
-    params.push(...filterDevs);
-  }
-  
-  // Generic dimension filters - use any valid dimension from VALID_DIMS
-  for (const dim of VALID_DIMS) {
-    // Skip deviation_category and deviation - handled separately above
-    if (dim === "deviation_category" || dim === "deviation") continue;
-    const filterVal = req.query[dim] as string | undefined;
-    if (filterVal) {
-      // Handle month specially (computed column)
-      if (dim === "month") {
-        query += ` AND strftime('%Y-%m', day) = ?`;
-      } else {
-        query += ` AND ${dim} = ?`;
+  try {
+    if (USE_SNOWFLAKE) {
+      const rows = await ensureCache(dateFrom || "2025-01-01", dateTo);
+      const filters: Record<string, string | undefined> = { date_from: dateFrom, date_to: dateTo };
+      if (filterCats.length > 0) filters.deviation_category = filterCats.join(",");
+      if (filterDevs.length > 0) filters.deviation = filterDevs.join(",");
+      for (const dim of VALID_DIMS) {
+        if (dim === "deviation_category" || dim === "deviation") continue;
+        const fv = req.query[dim] as string | undefined;
+        if (fv) filters[dim] = fv;
       }
-      params.push(filterVal);
+      const result = aggregateRows(rows, groupCols, safeMeasure as "deviation_count" | "quantity" | "amount_rub", filters);
+      return res.json(result);
     }
-  }
-  
-  if (dateFrom) {
-    query += ` AND day >= ?`;
-    params.push(dateFrom);
-  }
-  if (dateTo) {
-    query += ` AND day <= ?`;
-    params.push(dateTo);
-  }
-  query += ` GROUP BY ${groupByStr} HAVING value > 0 ORDER BY value DESC`;
 
-  const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
-  const result = rows.map((r) => ({
-    ...Object.fromEntries(groupCols.map((col) => [col, r[col]])),
-    name: groupCols.map((col) => String(r[col])).join(" / "),
-    value: r.value as number,
-  }));
+    const groupSelect = groupCols.map((c) => dimSelect(c)).join(", ");
+    const groupByStr = groupCols.map((c) => dimGroupBy(c)).join(", ");
+    let query = `SELECT ${groupSelect}, SUM(${safeMeasure}) as value FROM deviations WHERE 1=1`;
+    const params: string[] = [];
+    
+    if (filterCats.length > 0) {
+      const placeholders = filterCats.map(() => "?").join(", ");
+      query += ` AND deviation_category IN (${placeholders})`;
+      params.push(...filterCats);
+    }
+    if (filterDevs.length > 0) {
+      const placeholders = filterDevs.map(() => "?").join(", ");
+      query += ` AND deviation IN (${placeholders})`;
+      params.push(...filterDevs);
+    }
+    for (const dim of VALID_DIMS) {
+      if (dim === "deviation_category" || dim === "deviation") continue;
+      const filterVal = req.query[dim] as string | undefined;
+      if (filterVal) {
+        if (dim === "month") query += ` AND strftime('%Y-%m', day) = ?`;
+        else query += ` AND ${dim} = ?`;
+        params.push(filterVal);
+      }
+    }
+    if (dateFrom) { query += ` AND day >= ?`; params.push(dateFrom); }
+    if (dateTo) { query += ` AND day <= ?`; params.push(dateTo); }
+    query += ` GROUP BY ${groupByStr} HAVING value > 0 ORDER BY value DESC`;
 
-  res.json(result);
+    const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
+    const result = rows.map((r) => ({
+      ...Object.fromEntries(groupCols.map((col) => [col, r[col]])),
+      name: groupCols.map((col) => String(r[col])).join(" / "),
+      value: r.value as number,
+    }));
+    res.json(result);
+  } catch (e) {
+    console.error("[/api/data] error:", e);
+    res.status(500).json({ error: "Failed to fetch data" });
+  }
 });
 
 // Get raw rows filtered by dimension values (for detail view)
-app.get("/api/data/rows", (req, res) => {
+app.get("/api/data/rows", async (req, res) => {
   const filters = req.query as Record<string, string>;
   
-  let query = `SELECT datetime, day, week, hour, shift, stage, deviation_category, deviation, 
-               warehouse, customer, deviation_count, quantity, amount_rub, employee,
-               product_name, item_type
-               FROM deviations WHERE 1=1`;
-  const params: string[] = [];
-  
-  // Apply dimension filters - use any valid dimension from VALID_DIMS
-  for (const [key, value] of Object.entries(filters)) {
-    if (!value || key === "date_from" || key === "date_to") continue;
-    if (VALID_DIMS.has(key)) {
-      // Handle month specially (computed column)
-      if (key === "month") {
-        query += ` AND strftime('%Y-%m', day) = ?`;
-      } else {
-        query += ` AND ${key} = ?`;
-      }
-      params.push(value);
+  try {
+    if (USE_SNOWFLAKE) {
+      const allRows = await ensureCache(filters.date_from || "2025-01-01", filters.date_to);
+      const result = filterRows(allRows, filters, 500);
+      return res.json(result);
     }
+
+    let query = `SELECT datetime, day, week, hour, shift, stage, deviation_category, deviation, 
+                 warehouse, customer, deviation_count, quantity, amount_rub, employee,
+                 product_name, item_type
+                 FROM deviations WHERE 1=1`;
+    const params: string[] = [];
+    for (const [key, value] of Object.entries(filters)) {
+      if (!value || key === "date_from" || key === "date_to") continue;
+      if (VALID_DIMS.has(key)) {
+        if (key === "month") query += ` AND strftime('%Y-%m', day) = ?`;
+        else query += ` AND ${key} = ?`;
+        params.push(value);
+      }
+    }
+    if (filters.date_from) { query += ` AND day >= ?`; params.push(filters.date_from); }
+    if (filters.date_to) { query += ` AND day <= ?`; params.push(filters.date_to); }
+    query += ` ORDER BY datetime DESC LIMIT 500`;
+    
+    const rows = db.prepare(query).all(...params);
+    res.json(rows);
+  } catch (e) {
+    console.error("[/api/data/rows] error:", e);
+    res.status(500).json({ error: "Failed to fetch rows" });
   }
-  
-  // Date range filters
-  if (filters.date_from) {
-    query += ` AND day >= ?`;
-    params.push(filters.date_from);
-  }
-  if (filters.date_to) {
-    query += ` AND day <= ?`;
-    params.push(filters.date_to);
-  }
-  
-  query += ` ORDER BY datetime DESC LIMIT 500`;
-  
-  const rows = db.prepare(query).all(...params);
-  res.json(rows);
 });
 
-app.get("/api/pivot", (req, res) => {
+app.get("/api/pivot", async (req, res) => {
   const rowParam = (req.query.row as string) || "stage";
   const colDim = (req.query.col as string) || "warehouse";
   const measuresParam = (req.query.measures as string) || "deviation_count";
@@ -195,34 +213,39 @@ app.get("/api/pivot", (req, res) => {
   const dateFrom = req.query.date_from as string | undefined;
   const dateTo = req.query.date_to as string | undefined;
 
-  const selectMeasures = measures.map((m) => `SUM(${m}) as ${m}`).join(", ");
-  const rowSelect = rowDims.map((c) => dimSelect(c)).join(", ");
-  const rowGroupBy = rowDims.map((c) => dimGroupBy(c)).join(", ");
-  const colSelect = dimSelect(safeCol);
-  const colGroupBy = dimGroupBy(safeCol);
-  let query = `SELECT ${rowSelect}, ${colSelect}, ${selectMeasures} FROM deviations WHERE 1=1`;
-  const params: string[] = [];
-  if (filterCats.length > 0) {
-    const placeholders = filterCats.map(() => "?").join(", ");
-    query += ` AND deviation_category IN (${placeholders})`;
-    params.push(...filterCats);
-  }
-  if (filterWarehouse) {
-    query += ` AND warehouse = ?`;
-    params.push(filterWarehouse);
-  }
-  if (dateFrom) {
-    query += ` AND day >= ?`;
-    params.push(dateFrom);
-  }
-  if (dateTo) {
-    query += ` AND day <= ?`;
-    params.push(dateTo);
-  }
-  query += ` GROUP BY ${rowGroupBy}, ${colGroupBy}`;
+  try {
+    if (USE_SNOWFLAKE) {
+      const allRows = await ensureCache(dateFrom || "2025-01-01", dateTo);
+      const filters: Record<string, string | undefined> = { date_from: dateFrom, date_to: dateTo };
+      if (filterCats.length > 0) filters.deviation_category = filterCats.join(",");
+      if (filterWarehouse) filters.warehouse = filterWarehouse;
+      const result = pivotAggregate(allRows, rowDims, safeCol, measures, filters);
+      return res.json(result);
+    }
 
-  const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
-  res.json(rows);
+    const selectMeasures = measures.map((m) => `SUM(${m}) as ${m}`).join(", ");
+    const rowSelect = rowDims.map((c) => dimSelect(c)).join(", ");
+    const rowGroupBy = rowDims.map((c) => dimGroupBy(c)).join(", ");
+    const colSelect = dimSelect(safeCol);
+    const colGroupBy = dimGroupBy(safeCol);
+    let query = `SELECT ${rowSelect}, ${colSelect}, ${selectMeasures} FROM deviations WHERE 1=1`;
+    const params: string[] = [];
+    if (filterCats.length > 0) {
+      const placeholders = filterCats.map(() => "?").join(", ");
+      query += ` AND deviation_category IN (${placeholders})`;
+      params.push(...filterCats);
+    }
+    if (filterWarehouse) { query += ` AND warehouse = ?`; params.push(filterWarehouse); }
+    if (dateFrom) { query += ` AND day >= ?`; params.push(dateFrom); }
+    if (dateTo) { query += ` AND day <= ?`; params.push(dateTo); }
+    query += ` GROUP BY ${rowGroupBy}, ${colGroupBy}`;
+
+    const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
+    res.json(rows);
+  } catch (e) {
+    console.error("[/api/pivot] error:", e);
+    res.status(500).json({ error: "Failed to fetch pivot data" });
+  }
 });
 
 // ---- Times API (from times.tsv) ----
@@ -514,4 +537,13 @@ if (existsSync(distPath)) {
 const PORT = parseInt(process.env.PORT || "5054", 10);
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
+
+  if (USE_SNOWFLAKE) {
+    const today = new Date();
+    const threeMonthsAgo = new Date(today);
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    const from = threeMonthsAgo.toISOString().split("T")[0];
+    const to = today.toISOString().split("T")[0];
+    ensureCache(from, to).catch((e) => console.error("[Cache] Warm-up failed:", e));
+  }
 });

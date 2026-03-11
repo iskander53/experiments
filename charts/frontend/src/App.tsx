@@ -203,6 +203,11 @@ const fmt = (v: number | undefined) => {
   return new Intl.NumberFormat("ru-RU").format(v);
 };
 
+const fmtMoney = (v: number | undefined) => {
+  if (v === undefined || v === null) return "";
+  return new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+};
+
 interface DeviationsSummaryChartProps {
   colDim: string;
   globalWarehouse?: string;
@@ -574,7 +579,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
                         const val = node.cells[cv]?.[m];
                         const cellData = node.cells[cv];
                         const tooltipText = cellData
-                          ? `Кол-во откл.: ${fmt(cellData.deviation_count || 0)}\nКол-во шт: ${fmt(cellData.quantity || 0)}\nСумма: ${fmt(cellData.amount_rub || 0)} ₽`
+                          ? `Кол-во откл.: ${fmt(cellData.deviation_count || 0)}\nКол-во шт: ${fmt(cellData.quantity || 0)}\nСумма: ${fmtMoney(cellData.amount_rub || 0)} ₽`
                           : "";
                         
                         const cellId = `${key}|||${cv}|||${m}`;
@@ -627,7 +632,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
                             onClick={handleCellClick}
                             onContextMenu={handleCellRightClick}
                           >
-                            {val ? fmt(val) : ""}
+                            {val ? (m === "amount_rub" ? fmtMoney(val) : fmt(val)) : ""}
                           </td>
                         );
                       })
@@ -669,6 +674,25 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
                 <option key={d} value={d}>{DIM_LABELS[d] ?? d}</option>
               ))}
             </select>
+          </section>
+
+          <section className="filter-section">
+            <h3>Значения</h3>
+            <div className="chips">
+              {([
+                ["deviation_count", "Отклонения"],
+                ["quantity", "Кол-во шт"],
+                ["amount_rub", "Сумма ₽"],
+              ] as const).map(([m, label]) => (
+                <button
+                  key={m}
+                  className={`chip ${measures.includes(m) ? "active" : ""}`}
+                  onClick={() => toggleMeasure(m)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </section>
 
         </aside>
@@ -726,7 +750,47 @@ interface DetailModalProps {
   loading: boolean;
 }
 
+const DETAIL_COLUMNS: { key: keyof DetailRow; label: string }[] = [
+  { key: "datetime", label: "Дата/Время" },
+  { key: "warehouse", label: "Склад" },
+  { key: "stage", label: "Этап" },
+  { key: "deviation", label: "Отклонение" },
+  { key: "deviation_count", label: "Кол-во откл." },
+  { key: "quantity", label: "Ед." },
+  { key: "amount_rub", label: "Сумма, ₽" },
+  { key: "employee", label: "Сотрудник" },
+  { key: "product_name", label: "Наименование" },
+  { key: "item_type", label: "Тип товара" },
+];
+
 function DetailModal({ isOpen, onClose, title, rows, loading }: DetailModalProps) {
+  const [sortCol, setSortCol] = useState<keyof DetailRow | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const handleSort = (col: keyof DetailRow) => {
+    if (sortCol === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
+  };
+
+  const sortedRows = useMemo(() => {
+    if (!sortCol) return rows;
+    return [...rows].sort((a, b) => {
+      const av = a[sortCol];
+      const bv = b[sortCol];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av).localeCompare(String(bv));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [rows, sortCol, sortDir]);
+
   if (!isOpen) return null;
   
   return (
@@ -743,20 +807,22 @@ function DetailModal({ isOpen, onClose, title, rows, loading }: DetailModalProps
             <table className="detail-table">
               <thead>
                 <tr>
-                  <th>Дата/Время</th>
-                  <th>Склад</th>
-                  <th>Этап</th>
-                  <th>Отклонение</th>
-                  <th>Кол-во откл.</th>
-                  <th>Ед.</th>
-                  <th>Сумма, ₽</th>
-                  <th>Сотрудник</th>
-                  <th>Наименование</th>
-                  <th>Тип товара</th>
+                  {DETAIL_COLUMNS.map((col) => (
+                    <th
+                      key={col.key}
+                      className="sortable-th"
+                      onClick={() => handleSort(col.key)}
+                    >
+                      {col.label}
+                      {sortCol === col.key && (
+                        <span className="sort-arrow">{sortDir === "asc" ? " ▲" : " ▼"}</span>
+                      )}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, idx) => (
+                {sortedRows.map((row, idx) => (
                   <tr key={idx}>
                     <td>{row.datetime}</td>
                     <td>{row.warehouse}</td>
@@ -764,7 +830,7 @@ function DetailModal({ isOpen, onClose, title, rows, loading }: DetailModalProps
                     <td>{row.deviation}</td>
                     <td>{row.deviation_count}</td>
                     <td>{row.quantity}</td>
-                    <td>{row.amount_rub?.toLocaleString()}</td>
+                    <td>{row.amount_rub != null ? fmtMoney(Number(row.amount_rub)) : ""}</td>
                     <td>{row.employee}</td>
                     <td>{row.product_name}</td>
                     <td>{row.item_type}</td>
@@ -803,7 +869,6 @@ function TreemapSection({
   const [data, setData] = useState<DataItem[]>([]);
   const [loading, setLoading] = useState(false);
   
-  // Fetch deviation options once
   useEffect(() => {
     fetch("/api/dimensions")
       .then((r) => r.json())
@@ -969,9 +1034,13 @@ function TreemapSection({
       if (globalDateFrom) params.set("date_from", globalDateFrom);
       if (globalDateTo) params.set("date_to", globalDateTo);
       
+      console.log("[RIGHT-CLICK] fetching /api/data/rows with params:", Object.fromEntries(params.entries()));
       fetch(`/api/data/rows?${params}`)
         .then((r) => r.json())
-        .then((rows: DetailRow[]) => setModalRows(rows))
+        .then((rows: DetailRow[]) => {
+          console.log("[RIGHT-CLICK] got", rows.length, "rows");
+          setModalRows(rows);
+        })
         .catch((err) => {
           console.error("Failed to fetch rows:", err);
           setModalRows([]);
@@ -1651,23 +1720,31 @@ function App() {
   const [selectedCategories] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState<"deviations" | "times">("deviations");
   
-  // Load warehouse from localStorage
-  const [globalWarehouse, setGlobalWarehouse] = useState(() => {
-    return localStorage.getItem("globalWarehouse") || "";
-  });
   const [warehouseOptions, setWarehouseOptions] = useState<string[]>([]);
   const [pivotFilters, setPivotFilters] = useState<Record<string, string>>({});
   const [colDim, setColDim] = useState("week");
   
-  // Global date range filter (default: last 3 months)
   const defaultDates = getDefaultDateRange();
+  const savedWh = localStorage.getItem("globalWarehouse") || "";
+
+  // Applied (committed) filter values — these drive all data fetches
   const [globalDateFrom, setGlobalDateFrom] = useState(defaultDates.from);
   const [globalDateTo, setGlobalDateTo] = useState(defaultDates.to);
+  const [globalWarehouse, setGlobalWarehouse] = useState(savedWh);
 
-  // Save warehouse to localStorage when it changes
-  useEffect(() => {
-    localStorage.setItem("globalWarehouse", globalWarehouse);
-  }, [globalWarehouse]);
+  // Draft filter values — user edits these, applied on button click
+  const [draftDateFrom, setDraftDateFrom] = useState(defaultDates.from);
+  const [draftDateTo, setDraftDateTo] = useState(defaultDates.to);
+  const [draftWarehouse, setDraftWarehouse] = useState(savedWh);
+
+  const filtersChanged = draftDateFrom !== globalDateFrom || draftDateTo !== globalDateTo || draftWarehouse !== globalWarehouse;
+
+  const applyFilters = () => {
+    setGlobalDateFrom(draftDateFrom);
+    setGlobalDateTo(draftDateTo);
+    setGlobalWarehouse(draftWarehouse);
+    localStorage.setItem("globalWarehouse", draftWarehouse);
+  };
 
   useEffect(() => {
     fetch("/api/dimensions")
@@ -1706,26 +1783,34 @@ function App() {
             <label>Период:</label>
             <input
               type="date"
-              value={globalDateFrom}
-              onChange={(e) => setGlobalDateFrom(e.target.value)}
+              value={draftDateFrom}
+              onChange={(e) => setDraftDateFrom(e.target.value)}
             />
             <span className="date-separator">—</span>
             <input
               type="date"
-              value={globalDateTo}
-              onChange={(e) => setGlobalDateTo(e.target.value)}
+              value={draftDateTo}
+              onChange={(e) => setDraftDateTo(e.target.value)}
             />
           </div>
           
           <div className="global-warehouse-filter">
             <label>Терминал:</label>
-            <select value={globalWarehouse} onChange={(e) => setGlobalWarehouse(e.target.value)}>
+            <select value={draftWarehouse} onChange={(e) => setDraftWarehouse(e.target.value)}>
               <option value="">Все</option>
               {warehouseOptions.map((wh) => (
                 <option key={wh} value={wh}>{wh}</option>
               ))}
             </select>
           </div>
+
+          <button
+            className={`apply-filters-btn${filtersChanged ? " changed" : ""}`}
+            onClick={applyFilters}
+            disabled={!filtersChanged}
+          >
+            Применить
+          </button>
         </div>
       </div>
 
