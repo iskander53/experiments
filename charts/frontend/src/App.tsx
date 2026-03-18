@@ -17,6 +17,11 @@ const DIMENSION_OPTIONS = [
   "shift",
 ] as const;
 
+const DIMENSION_OPTIONS_WITH_BLAME = [
+  ...DIMENSION_OPTIONS,
+  "blame",
+] as const;
+
 const DIM_LABELS: Record<string, string> = {
   stage: "Этап",
   deviation_category: "Тип отклонения",
@@ -30,13 +35,20 @@ const DIM_LABELS: Record<string, string> = {
   month: "Месяц",
   hour: "Час",
   shift: "Смена",
+  blame: "Виновник",
 };
 
 // Group dimensions for filter sidebar
-const FILTER_SECTIONS: { title: string; dims: readonly (typeof DIMENSION_OPTIONS)[number][] }[] = [
+const FILTER_SECTIONS: { title: string; dims: readonly string[] }[] = [
   { title: "Время", dims: ["hour", "shift", "day", "week", "month"] },
   { title: "Операции", dims: ["stage", "deviation_category", "deviation"] },
   { title: "Организация", dims: ["warehouse", "customer", "employee", "item_type"] },
+];
+
+const FILTER_SECTIONS_WITH_BLAME: { title: string; dims: readonly string[] }[] = [
+  { title: "Время", dims: ["hour", "shift", "day", "week", "month"] },
+  { title: "Операции", dims: ["stage", "deviation_category", "deviation"] },
+  { title: "Организация", dims: ["warehouse", "customer", "employee", "item_type", "blame"] },
 ];
 
 
@@ -211,11 +223,12 @@ const fmtMoney = (v: number | undefined) => {
 interface DeviationsSummaryChartProps {
   colDim: string;
   globalWarehouse?: string;
+  globalBlame?: string;
   globalDateFrom?: string;
   globalDateTo?: string;
 }
 
-function DeviationsSummaryChart({ colDim, globalWarehouse, globalDateFrom, globalDateTo }: DeviationsSummaryChartProps) {
+function DeviationsSummaryChart({ colDim, globalWarehouse, globalBlame, globalDateFrom, globalDateTo }: DeviationsSummaryChartProps) {
   const [data, setData] = useState<{ label: string; deviation_count: number; amount_rub: number }[]>([]);
 
   useEffect(() => {
@@ -224,6 +237,7 @@ function DeviationsSummaryChart({ colDim, globalWarehouse, globalDateFrom, globa
       measure: "deviation_count",
     });
     if (globalWarehouse) params.set("warehouse", globalWarehouse);
+    if (globalBlame) params.set("blame", globalBlame);
     if (globalDateFrom) params.set("date_from", globalDateFrom);
     if (globalDateTo) params.set("date_to", globalDateTo);
 
@@ -253,7 +267,7 @@ function DeviationsSummaryChart({ colDim, globalWarehouse, globalDateFrom, globa
         setData(merged);
       })
       .catch(console.error);
-  }, [colDim, globalWarehouse, globalDateFrom, globalDateTo]);
+  }, [colDim, globalWarehouse, globalBlame, globalDateFrom, globalDateTo]);
 
   if (data.length === 0) return null;
 
@@ -321,15 +335,18 @@ function DeviationsSummaryChart({ colDim, globalWarehouse, globalDateFrom, globa
 interface PivotTableProps {
   selectedCategories: string[];
   globalWarehouse?: string;
+  globalBlame?: string;
   globalDateFrom?: string;
   globalDateTo?: string;
   colDim: string;
   onColDimChange: (dim: string) => void;
   onCellClick?: (filters: Record<string, string>) => void;
   hasActiveFilter?: boolean;
+  filterSections?: { title: string; dims: readonly string[] }[];
+  dimensionOptions?: readonly string[];
 }
 
-function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globalDateTo, colDim, onColDimChange, onCellClick, hasActiveFilter = false }: PivotTableProps) {
+function PivotTable({ selectedCategories, globalWarehouse, globalBlame, globalDateFrom, globalDateTo, colDim, onColDimChange, onCellClick, hasActiveFilter = false, filterSections: pivotFilterSections = FILTER_SECTIONS, dimensionOptions: pivotDimOptions = DIMENSION_OPTIONS }: PivotTableProps) {
   const [rowDims, setRowDims] = useState<string[]>(["deviation_category", "deviation"]);
   const [measures, setMeasures] = useState<string[]>(["deviation_count"]);
   const [rawData, setRawData] = useState<PivotRow[]>([]);
@@ -378,6 +395,9 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
     if (globalWarehouse) {
       params.set("warehouse", globalWarehouse);
     }
+    if (globalBlame) {
+      params.set("blame", globalBlame);
+    }
     if (globalDateFrom) {
       params.set("date_from", globalDateFrom);
     }
@@ -389,7 +409,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
       .then((d: PivotRow[]) => setRawData(d))
       .catch(console.error)
       .finally(() => setPivotLoading(false));
-  }, [rowDims, colDim, measures, selectedCategories, globalWarehouse, globalDateFrom, globalDateTo]);
+  }, [rowDims, colDim, measures, selectedCategories, globalWarehouse, globalBlame, globalDateFrom, globalDateTo]);
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -513,6 +533,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
           <DeviationsSummaryChart
             colDim={colDim}
             globalWarehouse={globalWarehouse}
+            globalBlame={globalBlame}
             globalDateFrom={globalDateFrom}
             globalDateTo={globalDateTo}
           />
@@ -607,9 +628,13 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
                           });
                           filters[colDim] = cv;
                           if (globalWarehouse) filters.warehouse = globalWarehouse;
+                          if (globalBlame) filters.blame = globalBlame;
                           if (globalDateFrom) filters.date_from = globalDateFrom;
                           if (globalDateTo) filters.date_to = globalDateTo;
                           
+                          console.log("[PIVOT RIGHT-CLICK] key:", key, "colValue:", cv, "rowDims:", rowDims, "colDim:", colDim);
+                          console.log("[PIVOT RIGHT-CLICK] filters:", filters);
+
                           const labelParts = [...parts, cv];
                           setModalTitle(labelParts.join(" / "));
                           setModalRows([]);
@@ -617,9 +642,13 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
                           setModalLoading(true);
                           
                           const params = new URLSearchParams(filters);
+                          console.log("[PIVOT RIGHT-CLICK] fetching /api/data/rows?", params.toString());
                           fetch(`/api/data/rows?${params}`)
                             .then((r) => r.json())
-                            .then((rows: DetailRow[]) => setModalRows(rows))
+                            .then((rows: DetailRow[]) => {
+                              console.log("[PIVOT RIGHT-CLICK] got", rows.length, "rows");
+                              setModalRows(rows);
+                            })
                             .catch(console.error)
                             .finally(() => setModalLoading(false));
                         };
@@ -649,7 +678,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
         <aside className="pivot-sidebar">
           <section className="filter-section">
             <h3>Строки</h3>
-            {FILTER_SECTIONS.filter((sec) => sec.title !== "Время").map((sec) => (
+            {pivotFilterSections.filter((sec) => sec.title !== "Время").map((sec) => (
               <fieldset key={sec.title}>
                 <legend>{sec.title}</legend>
                 <div className="chips">
@@ -670,7 +699,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalDateFrom, globa
           <section className="filter-section">
             <h3>Столбцы</h3>
             <select value={colDim} onChange={(e) => onColDimChange(e.target.value)}>
-              {DIMENSION_OPTIONS.map((d) => (
+              {pivotDimOptions.map((d) => (
                 <option key={d} value={d}>{DIM_LABELS[d] ?? d}</option>
               ))}
             </select>
@@ -715,9 +744,10 @@ interface TreemapSectionProps {
   measureOptions: typeof MEASURE_OPTIONS;
   defaultDims?: string[];
   defaultMeasure?: string;
-  fixedCategories?: string[];  // If set, category filter is hidden and these are used
+  fixedCategories?: string[];
   showCategoryFilter?: boolean;
   globalWarehouse?: string;
+  globalBlame?: string;
   globalDateFrom?: string;
   globalDateTo?: string;
   pivotFilters?: Record<string, string>;
@@ -740,6 +770,8 @@ interface DetailRow {
   employee: string;
   product_name: string;
   item_type: string;
+  blame: string;
+  deviation_source: string;
 }
 
 interface DetailModalProps {
@@ -755,9 +787,11 @@ const DETAIL_COLUMNS: { key: keyof DetailRow; label: string }[] = [
   { key: "warehouse", label: "Склад" },
   { key: "stage", label: "Этап" },
   { key: "deviation", label: "Отклонение" },
+  { key: "deviation_source", label: "Отклонение (источник)" },
   { key: "deviation_count", label: "Кол-во откл." },
   { key: "quantity", label: "Ед." },
   { key: "amount_rub", label: "Сумма, ₽" },
+  { key: "blame", label: "Виновник" },
   { key: "employee", label: "Сотрудник" },
   { key: "product_name", label: "Наименование" },
   { key: "item_type", label: "Тип товара" },
@@ -824,16 +858,13 @@ function DetailModal({ isOpen, onClose, title, rows, loading }: DetailModalProps
               <tbody>
                 {sortedRows.map((row, idx) => (
                   <tr key={idx}>
-                    <td>{row.datetime}</td>
-                    <td>{row.warehouse}</td>
-                    <td>{row.stage}</td>
-                    <td>{row.deviation}</td>
-                    <td>{row.deviation_count}</td>
-                    <td>{row.quantity}</td>
-                    <td>{row.amount_rub != null ? fmtMoney(Number(row.amount_rub)) : ""}</td>
-                    <td>{row.employee}</td>
-                    <td>{row.product_name}</td>
-                    <td>{row.item_type}</td>
+                    {DETAIL_COLUMNS.map((col) => (
+                      <td key={col.key}>
+                        {col.key === "amount_rub"
+                          ? fmtMoney(Number(row[col.key] ?? 0))
+                          : String(row[col.key] ?? "")}
+                      </td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
@@ -857,6 +888,7 @@ function TreemapSection({
   fixedCategories,
   showCategoryFilter = true,
   globalWarehouse,
+  globalBlame,
   globalDateFrom,
   globalDateTo,
   pivotFilters = {},
@@ -905,6 +937,9 @@ function TreemapSection({
     if (globalWarehouse) {
       params.set("warehouse", globalWarehouse);
     }
+    if (globalBlame) {
+      params.set("blame", globalBlame);
+    }
     // Add pivot table filters
     for (const [key, value] of Object.entries(pivotFilters)) {
       if (value && !params.has(key)) {
@@ -918,7 +953,7 @@ function TreemapSection({
       .then((d: DataItem[]) => setData(d))
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [selectedDims, measure, selectedCategories, fixedCategories, selectedDeviations, globalWarehouse, pivotFilters, globalDateFrom, globalDateTo]);
+  }, [selectedDims, measure, selectedCategories, fixedCategories, selectedDeviations, globalWarehouse, globalBlame, pivotFilters, globalDateFrom, globalDateTo]);
 
   const treemap = useMemo(
     () => buildTreemap(data, selectedDims),
@@ -1004,6 +1039,9 @@ function TreemapSection({
       const { id, label } = point;
       const parts = id.split("|||").filter(Boolean);
       
+      console.log("[TREEMAP RIGHT-CLICK] id:", id, "label:", label);
+      console.log("[TREEMAP RIGHT-CLICK] parts:", parts, "selectedDims:", selectedDims);
+
       setModalRows([]);
       setModalTitle(label);
       setModalOpen(true);
@@ -1017,14 +1055,17 @@ function TreemapSection({
       });
       
       const cats = fixedCategories || selectedCategories;
-      if (cats.length > 0) {
-        params.set("deviation_category", cats[0]);
+      if (cats.length > 0 && !params.has("deviation_category")) {
+        params.set("deviation_category", cats.join(","));
       }
-      if (selectedDeviations.length > 0) {
-        params.set("deviation", selectedDeviations[0]);
+      if (selectedDeviations.length > 0 && !params.has("deviation")) {
+        params.set("deviation", selectedDeviations.join(","));
       }
       if (globalWarehouse) {
         params.set("warehouse", globalWarehouse);
+      }
+      if (globalBlame) {
+        params.set("blame", globalBlame);
       }
       for (const [key, value] of Object.entries(pivotFilters)) {
         if (value && !params.has(key)) {
@@ -1034,7 +1075,7 @@ function TreemapSection({
       if (globalDateFrom) params.set("date_from", globalDateFrom);
       if (globalDateTo) params.set("date_to", globalDateTo);
       
-      console.log("[RIGHT-CLICK] fetching /api/data/rows with params:", Object.fromEntries(params.entries()));
+      console.log("[TREEMAP RIGHT-CLICK] final params:", Object.fromEntries(params.entries()));
       fetch(`/api/data/rows?${params}`)
         .then((r) => r.json())
         .then((rows: DetailRow[]) => {
@@ -1718,7 +1759,7 @@ function getDefaultDateRange() {
 
 function App() {
   const [selectedCategories] = useState<string[]>([]);
-  const [currentPage, setCurrentPage] = useState<"deviations" | "times">("deviations");
+  const [currentPage, setCurrentPage] = useState<"deviations_wh" | "deviations_all" | "times">("deviations_all");
   
   const [warehouseOptions, setWarehouseOptions] = useState<string[]>([]);
   const [pivotFilters, setPivotFilters] = useState<Record<string, string>>({});
@@ -1731,6 +1772,9 @@ function App() {
   const [globalDateFrom, setGlobalDateFrom] = useState(defaultDates.from);
   const [globalDateTo, setGlobalDateTo] = useState(defaultDates.to);
   const [globalWarehouse, setGlobalWarehouse] = useState(savedWh);
+
+  // blame is derived from which tab is active
+  const globalBlame = currentPage === "deviations_wh" ? "Склад" : "";
 
   // Draft filter values — user edits these, applied on button click
   const [draftDateFrom, setDraftDateFrom] = useState(defaultDates.from);
@@ -1765,10 +1809,16 @@ function App() {
       <div className="global-filters">
         <nav className="page-nav">
           <button
-            className={`nav-tab ${currentPage === "deviations" ? "active" : ""}`}
-            onClick={() => setCurrentPage("deviations")}
+            className={`nav-tab ${currentPage === "deviations_all" ? "active" : ""}`}
+            onClick={() => { setCurrentPage("deviations_all"); setPivotFilters({}); }}
           >
             Отклонения
+          </button>
+          <button
+            className={`nav-tab ${currentPage === "deviations_wh" ? "active" : ""}`}
+            onClick={() => { setCurrentPage("deviations_wh"); setPivotFilters({}); }}
+          >
+            Отклонения склада
           </button>
           <button
             className={`nav-tab ${currentPage === "times" ? "active" : ""}`}
@@ -1814,17 +1864,20 @@ function App() {
         </div>
       </div>
 
-      {currentPage === "deviations" && (
+      {(currentPage === "deviations_wh" || currentPage === "deviations_all") && (
         <>
           <PivotTable
             selectedCategories={selectedCategories}
             globalWarehouse={globalWarehouse}
+            globalBlame={globalBlame}
             globalDateFrom={globalDateFrom}
             globalDateTo={globalDateTo}
             colDim={colDim}
             onColDimChange={setColDim}
             onCellClick={handlePivotCellClick}
             hasActiveFilter={Object.keys(pivotFilters).length > 0}
+            filterSections={currentPage === "deviations_all" ? FILTER_SECTIONS_WITH_BLAME : FILTER_SECTIONS}
+            dimensionOptions={currentPage === "deviations_all" ? DIMENSION_OPTIONS_WITH_BLAME : DIMENSION_OPTIONS}
           />
 
           {Object.keys(pivotFilters).length > 0 && (
@@ -1835,13 +1888,15 @@ function App() {
           )}
 
           <TreemapSection
+            key={currentPage}
             title="Отклонения — Treemap"
-            filterSections={FILTER_SECTIONS}
+            filterSections={currentPage === "deviations_all" ? FILTER_SECTIONS_WITH_BLAME : FILTER_SECTIONS}
             measureOptions={MEASURE_OPTIONS}
-            defaultDims={["customer", "stage", "deviation_category", "deviation"]}
+            defaultDims={currentPage === "deviations_all" ? ["blame", "deviation_category", "deviation"] : ["customer", "stage", "deviation_category", "deviation"]}
             defaultMeasure="deviation_count"
             showCategoryFilter={true}
             globalWarehouse={globalWarehouse}
+            globalBlame={globalBlame}
             globalDateFrom={globalDateFrom}
             globalDateTo={globalDateTo}
             pivotFilters={pivotFilters}

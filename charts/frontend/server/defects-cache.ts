@@ -18,6 +18,8 @@ export interface DefectRow {
   employee: string;
   product_name: string;
   item_type: string;
+  blame: string;
+  deviation_source: string;
   month: string;
 }
 
@@ -46,6 +48,8 @@ function rowToDefect(raw: Record<string, unknown>): DefectRow {
     employee: String(m.employee ?? ""),
     product_name: String(m.product_name ?? ""),
     item_type: String(m.item_type ?? ""),
+    blame: String(m.blame ?? ""),
+    deviation_source: String(m.deviation_source ?? ""),
     month: day.slice(0, 7),
   };
 }

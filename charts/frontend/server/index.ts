@@ -35,8 +35,8 @@ if (existsSync(distPath)) {
 }
 
 const VALID_DIMS = new Set([
-  "stage", "deviation_category", "deviation", "warehouse",
-  "customer", "employee", "item_type", "shift", "hour", "day", "week", "month",
+  "stage", "deviation_category", "deviation", "deviation_source", "warehouse",
+  "customer", "employee", "item_type", "shift", "hour", "day", "week", "month", "blame",
 ]);
 
 // month is computed from day
@@ -58,13 +58,14 @@ app.get("/", (_req, res) => {
 });
 
 const STATIC_DIMS: Record<string, (string | number)[]> = {
-  stage: ["Неизвестно", "Отгрузка ГМ", "Подбор", "Приемка", "Размещение", "Размещение коробов", "Сортировка", "Упаковка", "Хранение", "Экспертиза"],
-  deviation_category: ["Брак на складском хранении", "Нарушение сроков", "Не определено", "Несогласие со стоимостью", "По времени", "По качеству", "По количеству", "Повреждения"],
-  deviation: ["Брак на складском хранении", "Нарушение сроков", "Не было движений 30+ дней", "Не определено", "Несогласие со стоимостью", "Опоздание", "Пересорт", "Повреждения", "излишек", "недостача", "повреждение"],
+  stage: ["Неизвестно", "Отгрузка", "Отгрузка ГМ", "Подбор", "Получатель", "Приемка", "Размещение", "Размещение ГМ", "Размещение коробов", "Сортировка", "Упаковка", "Упаковка ГМ", "Хранение", "Экспертиза"],
+  deviation_category: ["По времени", "По качеству", "По количеству", "Неизвестно"],
+  deviation: ["Безусловный возврат", "Не было движений 30+ дней", "Неизвестно", "Опоздание", "Пересорт", "брак", "излишек", "контрафакт", "недостача", "недостача 30д", "повреждение", "повреждение упаковки", "пересорт"],
   warehouse: ["BD1", "DWC", "K40", "K41", "KBD", "KDZ", "KTH"],
-  item_type: ["1CRT", "4LARGE", "5GLASS", "6B", "7BUM", "BIG", "BOX", "CURVE", "NORMAL", "OIL", "SIN", "SMALL", "UNKNOWN"],
+  item_type: ["BIG", "BOX", "NORMAL", "SMALL", "STOCK", "UNKNOWN"],
   shift: [1, 2],
   hour: Array.from({ length: 24 }, (_, i) => i),
+  blame: ["Склад", "Поставщик", "Получатель"],
 };
 
 app.get("/api/dimensions", (_req, res) => {
@@ -219,6 +220,8 @@ app.get("/api/pivot", async (req, res) => {
       const filters: Record<string, string | undefined> = { date_from: dateFrom, date_to: dateTo };
       if (filterCats.length > 0) filters.deviation_category = filterCats.join(",");
       if (filterWarehouse) filters.warehouse = filterWarehouse;
+      const filterBlame = req.query.blame as string | undefined;
+      if (filterBlame) filters.blame = filterBlame;
       const result = pivotAggregate(allRows, rowDims, safeCol, measures, filters);
       return res.json(result);
     }
