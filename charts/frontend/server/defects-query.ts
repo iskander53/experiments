@@ -3,10 +3,17 @@
  * Based on: DPMO BD, KDZ, DWC числитель 7.sql
  * Adds "Виновник" column (Склад / Поставщик / Получатель).
  */
+function sanitizeDate(d: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error(`Invalid date format: ${d}`);
+  return d;
+}
+
 export function buildDefectsCTE(dateFrom: string, dateTo?: string): string {
-  const innerDateCond = `'${dateFrom}'`;
-  const innerDateCondTs = `'${dateFrom}'::timestamp`;
-  const innerDateCondTsNtz = `'${dateFrom}'::timestamp_ntz`;
+  const safeDateFrom = sanitizeDate(dateFrom);
+  if (dateTo) sanitizeDate(dateTo);
+  const innerDateCond = `'${safeDateFrom}'`;
+  const innerDateCondTs = `'${safeDateFrom}'::timestamp`;
+  const innerDateCondTsNtz = `'${safeDateFrom}'::timestamp_ntz`;
 
   return `
 WITH u AS (

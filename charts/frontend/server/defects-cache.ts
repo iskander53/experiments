@@ -26,7 +26,7 @@ export interface DefectRow {
 let cachedRows: DefectRow[] = [];
 let cachedFrom: string | null = null;
 let cachedTo: string | null = null;
-let loading: Promise<void> | null = null;
+let loadingPromise: Promise<void> | null = null;
 
 function rowToDefect(raw: Record<string, unknown>): DefectRow {
   const m = mapRow(raw);
@@ -65,6 +65,12 @@ async function fetchRange(dateFrom: string, dateTo?: string): Promise<DefectRow[
   return result;
 }
 
+function nextDay(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().split("T")[0];
+}
+
 /**
  * Ensures cache covers [dateFrom, dateTo]. If the requested range extends
  * beyond the current cache, only the missing segment is fetched from Snowflake
@@ -79,30 +85,29 @@ export async function ensureCache(dateFrom: string, dateTo?: string): Promise<De
     }
   }
 
-  if (loading) {
-    await loading;
+  // If another load is in progress, wait for it then re-check
+  if (loadingPromise) {
+    await loadingPromise;
     if (cachedFrom !== null && cachedTo !== null && dateFrom >= cachedFrom && reqTo <= cachedTo) {
       return cachedRows;
     }
   }
 
-  loading = (async () => {
+  const doLoad = async () => {
     if (cachedFrom === null || cachedTo === null) {
-      // Cold start — fetch entire range
       cachedRows = await fetchRange(dateFrom, dateTo);
       cachedFrom = dateFrom;
       cachedTo = reqTo;
       return;
     }
 
-    // Incremental: figure out which segments are missing
     const segments: { from: string; to: string }[] = [];
 
     if (dateFrom < cachedFrom) {
       segments.push({ from: dateFrom, to: cachedFrom });
     }
     if (reqTo > cachedTo) {
-      segments.push({ from: cachedTo, to: reqTo });
+      segments.push({ from: nextDay(cachedTo), to: reqTo });
     }
 
     if (segments.length === 0) return;
@@ -114,10 +119,9 @@ export async function ensureCache(dateFrom: string, dateTo?: string): Promise<De
       cachedRows = cachedRows.concat(newRows);
     }
 
-    // Deduplicate by datetime+product_name+deviation+warehouse+employee
     const seen = new Set<string>();
     cachedRows = cachedRows.filter((r) => {
-      const key = `${r.datetime}|${r.stage}|${r.deviation}|${r.warehouse}|${r.customer}|${r.employee}|${r.product_name}`;
+      const key = `${r.datetime}|${r.stage}|${r.deviation}|${r.deviation_category}|${r.warehouse}|${r.customer}|${r.employee}|${r.product_name}|${r.blame}|${r.deviation_count}|${r.quantity}|${r.amount_rub}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -125,10 +129,14 @@ export async function ensureCache(dateFrom: string, dateTo?: string): Promise<De
 
     cachedFrom = dateFrom < cachedFrom ? dateFrom : cachedFrom;
     cachedTo = reqTo > cachedTo ? reqTo : cachedTo;
-  })();
+  };
 
-  await loading;
-  loading = null;
+  loadingPromise = doLoad();
+  try {
+    await loadingPromise;
+  } finally {
+    loadingPromise = null;
+  }
   return cachedRows;
 }
 

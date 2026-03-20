@@ -1,3 +1,6 @@
-deviations.db-shm
-deviations.db-wal
-deviations.csv
+*.db
+*.db-shm
+*.db-wal
+*.csv
+*.tsv
+.DS_Store
