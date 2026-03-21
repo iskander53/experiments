@@ -29,6 +29,7 @@ if (existsSync(distPath)) {
 const VALID_DIMS = new Set([
   "stage", "deviation_category", "deviation", "deviation_source", "warehouse",
   "customer", "employee", "item_type", "shift", "hour", "day", "week", "month", "blame",
+  "workstation",
 ]);
 
 const VALID_MEASURES = new Set(["deviation_count", "quantity", "amount_rub"]);

@@ -20,6 +20,7 @@ const DIMENSION_OPTIONS = [
 const DIMENSION_OPTIONS_WITH_BLAME = [
   ...DIMENSION_OPTIONS,
   "blame",
+  "workstation",
 ] as const;
 
 const DIM_LABELS: Record<string, string> = {
@@ -36,6 +37,7 @@ const DIM_LABELS: Record<string, string> = {
   hour: "Час",
   shift: "Смена",
   blame: "Виновник",
+  workstation: "Рабочее место",
 };
 
 // Group dimensions for filter sidebar
@@ -48,7 +50,7 @@ const FILTER_SECTIONS: { title: string; dims: readonly string[] }[] = [
 const FILTER_SECTIONS_WITH_BLAME: { title: string; dims: readonly string[] }[] = [
   { title: "Время", dims: ["hour", "shift", "day", "week", "month"] },
   { title: "Операции", dims: ["stage", "deviation_category", "deviation"] },
-  { title: "Организация", dims: ["warehouse", "customer", "employee", "item_type", "blame"] },
+  { title: "Организация", dims: ["warehouse", "customer", "employee", "item_type", "blame", "workstation"] },
 ];
 
 
@@ -249,7 +251,9 @@ function DeviationsSummaryChart({ colDim, globalWarehouse, globalBlame, globalDa
       fetch(`/api/data?${params}`).then((r) => r.json()),
       fetch(`/api/data?${paramsAmount}`).then((r) => r.json()),
     ])
-      .then(([countRows, amountRows]: [any[], any[]]) => {
+      .then(([countRaw, amountRaw]) => {
+        const countRows: any[] = Array.isArray(countRaw) ? countRaw : [];
+        const amountRows: any[] = Array.isArray(amountRaw) ? amountRaw : [];
         const amountMap = new Map<string, number>();
         for (const row of amountRows) {
           amountMap.set(String(row[colDim] ?? row.name ?? ""), row.value || 0);
@@ -406,7 +410,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalBlame, globalDa
     }
     fetch(`/api/pivot?${params}`)
       .then((r) => r.json())
-      .then((d: PivotRow[]) => setRawData(d))
+      .then((d) => setRawData(Array.isArray(d) ? d : []))
       .catch(console.error)
       .finally(() => setPivotLoading(false));
   }, [rowDims, colDim, measures, selectedCategories, globalWarehouse, globalBlame, globalDateFrom, globalDateTo]);
@@ -644,7 +648,7 @@ function PivotTable({ selectedCategories, globalWarehouse, globalBlame, globalDa
                           const params = new URLSearchParams(filters);
                           fetch(`/api/data/rows?${params}`)
                             .then((r) => r.json())
-                            .then((rows: DetailRow[]) => setModalRows(rows))
+                            .then((d) => setModalRows(Array.isArray(d) ? d : []))
                             .catch(console.error)
                             .finally(() => setModalLoading(false));
                         };
@@ -944,7 +948,7 @@ function TreemapSection({
     if (globalDateTo) params.set("date_to", globalDateTo);
     fetch(`/api/data?${params}`)
       .then((r) => r.json())
-      .then((d: DataItem[]) => setData(d))
+      .then((d) => setData(Array.isArray(d) ? d : []))
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [selectedDims, measure, selectedCategories, fixedCategories, selectedDeviations, globalWarehouse, globalBlame, pivotFilters, globalDateFrom, globalDateTo]);
@@ -1065,7 +1069,7 @@ function TreemapSection({
     
     fetch(`/api/data/rows?${params}`)
       .then((r) => r.json())
-      .then((rows: DetailRow[]) => setModalRows(rows))
+      .then((d) => setModalRows(Array.isArray(d) ? d : []))
       .catch((err) => {
         console.error("Failed to fetch rows:", err);
         setModalRows([]);

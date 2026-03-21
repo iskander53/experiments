@@ -19,6 +19,7 @@ export interface DefectRow {
   product_name: string;
   item_type: string;
   blame: string;
+  workstation: string;
   deviation_source: string;
   month: string;
 }
@@ -49,6 +50,7 @@ function rowToDefect(raw: Record<string, unknown>): DefectRow {
     product_name: String(m.product_name ?? ""),
     item_type: String(m.item_type ?? ""),
     blame: String(m.blame ?? ""),
+    workstation: String(m.workstation ?? ""),
     deviation_source: String(m.deviation_source ?? ""),
     month: day.slice(0, 7),
   };
@@ -65,16 +67,12 @@ async function fetchRange(dateFrom: string, dateTo?: string): Promise<DefectRow[
   return result;
 }
 
-function nextDay(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().split("T")[0];
-}
-
 /**
- * Ensures cache covers [dateFrom, dateTo]. If the requested range extends
- * beyond the current cache, only the missing segment is fetched from Snowflake
- * and merged into the existing cache.
+ * Ensures cache covers [dateFrom, dateTo].
+ *
+ * The SQL uses dateFrom as an anchor for 30-day lookback windows, so fetching
+ * a small delta with a different anchor re-runs the entire heavy query anyway.
+ * Instead, when the range widens we re-fetch the full widened span once.
  */
 export async function ensureCache(dateFrom: string, dateTo?: string): Promise<DefectRow[]> {
   const reqTo = dateTo || "2099-12-31";
@@ -94,41 +92,12 @@ export async function ensureCache(dateFrom: string, dateTo?: string): Promise<De
   }
 
   const doLoad = async () => {
-    if (cachedFrom === null || cachedTo === null) {
-      cachedRows = await fetchRange(dateFrom, dateTo);
-      cachedFrom = dateFrom;
-      cachedTo = reqTo;
-      return;
-    }
+    const wideFrom = cachedFrom && cachedFrom < dateFrom ? cachedFrom : dateFrom;
+    const wideTo = cachedTo && cachedTo > reqTo ? cachedTo : reqTo;
 
-    const segments: { from: string; to: string }[] = [];
-
-    if (dateFrom < cachedFrom) {
-      segments.push({ from: dateFrom, to: cachedFrom });
-    }
-    if (reqTo > cachedTo) {
-      segments.push({ from: nextDay(cachedTo), to: reqTo });
-    }
-
-    if (segments.length === 0) return;
-
-    const fetches = segments.map((s) => fetchRange(s.from, s.to));
-    const results = await Promise.all(fetches);
-
-    for (const newRows of results) {
-      cachedRows = cachedRows.concat(newRows);
-    }
-
-    const seen = new Set<string>();
-    cachedRows = cachedRows.filter((r) => {
-      const key = `${r.datetime}|${r.stage}|${r.deviation}|${r.deviation_category}|${r.warehouse}|${r.customer}|${r.employee}|${r.product_name}|${r.blame}|${r.deviation_count}|${r.quantity}|${r.amount_rub}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    cachedFrom = dateFrom < cachedFrom ? dateFrom : cachedFrom;
-    cachedTo = reqTo > cachedTo ? reqTo : cachedTo;
+    cachedRows = await fetchRange(wideFrom, wideTo === "2099-12-31" ? undefined : wideTo);
+    cachedFrom = wideFrom;
+    cachedTo = wideTo;
   };
 
   loadingPromise = doLoad();

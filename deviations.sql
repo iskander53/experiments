@@ -219,11 +219,9 @@ reklamacii AS (
         case
             when ec.problem_code = 'Излишки' then 'излишек'
             when ec.problem_code in ('Недостача ГМ', 'Недостача') then 'недостача'
-            when ec.problem_code in (
-                'Заводской брак',
-                'Механические повреждения',
-                'Некомплект'
-            ) then 'повреждение'
+            when ec.problem_code = 'Механические повреждения' then 'повреждение'
+            when ec.problem_code = 'Заводской брак' then 'брак'
+            when ec.problem_code = 'Некомплект' then 'некомплект'
             else 'Неизвестно'
         end as "Отклонение",
         ec.problem_code as "Отклонение из источника",
@@ -300,14 +298,14 @@ ops as (
             order by
                 event_dttm
         ) as prev_user,
-        lag(event_dttm) over (
+        lead(event_dttm) over (
             partition by sku
             order by
                 event_dttm
-        ) as prev_action,
+        ) as next_action,
         case
-            when prev_action is not null then datediff(minute,prev_action,event_dttm)
-            else datediff(minute,event_dttm,current_timestamp())
+            when next_action is null then --datediff(minute,prev_action,event_dttm)
+            datediff(minute,event_dttm,current_timestamp())
         end as action_time,
         case
             when action_time > 43200 then 1
@@ -367,6 +365,7 @@ defects30days as (
         ops.defect30flag = 1
         and "ДатаВремя" >= '2025-10-01'
         and ops.EVENT_TYPE ilike '%cargo%'
+        and ops.EVENT_TYPE != 'CARGO_SHIP'
         and ops.sku_nm != 'NONE'
 ),
 ops_dz as (
@@ -933,7 +932,8 @@ defects_bd as (
 ),
 BD_UNION as (
 select
-    *
+    *,
+    null as "Рабочее место"
 from
     defects_bd where "ДатаВремя" >= '2026-01-01' ),
     --------------------------------------------------------------------KDZ
@@ -951,7 +951,7 @@ from
             ORDER BY o.OPERATION_DT
         ) AS prev_type,
 
-        LAST_VALUE(o.DETAILPRICEBUY) IGNORE NULLS OVER (
+        LAST_VALUE(o.DETAILPRICEBUY_RUB) IGNORE NULLS OVER (
             PARTITION BY o.OBJECTKEY
             ORDER BY o.OPERATION_DT
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -987,10 +987,9 @@ from
 kdz_ops_gaps AS (
     SELECT
         o.*,
-        case when LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTKEY ORDER BY o.OPERATION_DT) is null then current_date()
-        else LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTKEY ORDER BY o.OPERATION_DT)
-        end AS next_op_dt,
-       ---- LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTKEY ORDER BY o.OPERATION_DT) AS next_op_dt
+        CASE WHEN LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTKEY ORDER BY o.OPERATION_DT) IS NULL THEN current_date()
+        ELSE LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTKEY ORDER BY o.OPERATION_DT)
+        END AS next_op_dt
     FROM kdz_ops_all o
 ),
 
@@ -1022,6 +1021,7 @@ kdz_defect_events AS (
         'KDZ' AS "Склад",
         COALESCE(o.CUSTOMERNAME, 'EMEX') AS "Заказчик",
         'Склад' AS "Виновник", ---добавил Ленар 12 марта
+        null as "Рабочее место",---добавил Ленар 18 марта
         o.qty_eff                  AS claim_qty,
         COALESCE(o.price_eff, 0)   AS unit_price,
         o.qty_eff * COALESCE(o.price_eff, 0) AS claim_amount,
@@ -1078,6 +1078,7 @@ END AS "Категория отклонения",
         WHEN r.REASONID IN (101,431) THEN 'Получатель'
         ELSE 'Склад'
     END AS "Виновник",
+    null as "Рабочее место",
     COALESCE(g.qty_eff, 1) AS claim_qty,
 COALESCE(g.price_eff, 0) AS unit_price,
 COALESCE(g.qty_eff, 1) * COALESCE(g.price_eff, 0) AS claim_amount,
@@ -1128,6 +1129,7 @@ kdz_time_defect_events AS (
         'KDZ' AS "Склад",
         COALESCE(o.CUSTOMERNAME, 'EMEX') AS "Заказчик",
         'Склад' AS "Виновник", ---добавил Ленар 12 марта
+        null as "Рабочее место",
         o.qty_eff                    AS claim_qty,
         COALESCE(o.price_eff, 0)     AS unit_price,
         o.qty_eff * COALESCE(o.price_eff, 0) AS claim_amount,
@@ -1139,7 +1141,7 @@ kdz_time_defect_events AS (
        o.OBJECTCODE::VARCHAR AS OBJECTCODE
     FROM kdz_ops_gaps o
     WHERE 1=1
-    ---o.next_op_dt IS NOT NULL
+      and o.next_op_dt IS NOT NULL
       AND DATEDIFF('day', o.OPERATION_DT, o.next_op_dt) >= 30
       -- показываем дефекты, чья "точка" (op_dt+30) попала в период отчёта
       AND DATEADD('day', 30, o.OPERATION_DT) >= '2026-01-01'::timestamp
@@ -1213,7 +1215,12 @@ base_operations AS (
         t.SHIPPINGDATE,
         t.REPACKUSERID,
         t.REPACKDATE,
-
+        COALESCE(
+    NULLIF(TRIM(RECEIPTPLACE), ''),
+    NULLIF(TRIM(PLACEMENTPLACE), ''),
+    NULLIF(TRIM(PACKINGPLACE), ''),
+    NULLIF(TRIM(REPACKPLACE), '')
+) AS workstation,
         d.DETAILNAME,
         idetails.DETAILPRICEBUYRUR,
         st.PlaceId AS CurrentPlace
@@ -1270,7 +1277,7 @@ defect_flags_kdz AS (
         op.DETAILPRICEBUYRUR,
         r.QUANTITY AS claim_ct,
         TRY_CAST(SUBSTR(SUBSTR(op.OBJECTCODE, 1, 5), 4, 2) AS INTEGER) AS item_qty,
-
+         op.workstation,
         op.current_stage,
         op.current_stage_dt AS IncomeDate,
 
@@ -1325,6 +1332,7 @@ source_kdz_detail AS (
         DATEADD('DAY', -(DAYOFWEEKISO(IncomeDate) - 1), DATE_TRUNC('DAY', IncomeDate)) AS "Неделя",
         DATE_PART('HOUR', IncomeDate) AS "Час",
         current_stage AS stage,
+        workstation,
         type,
         problem_code,
         DETAILPRICEBUYRUR AS claim_price,
@@ -1383,7 +1391,7 @@ kdz_sup_def AS (
             WHEN problem_code = 'Излишки' THEN 'излишек'
             WHEN problem_code = 'Потеряно при подборе' THEN 'недостача'
             WHEN problem_code = 'Повреждение' THEN 'повреждение'
-            WHEN problem_code = 'Без маркировки' THEN 'повреждение упаковки'
+            WHEN problem_code = 'Без маркировки' THEN 'повреждение'
             WHEN problem_code = 'Недостача' THEN 'недостача'
             ELSE problem_code
         END AS "Отклонение",
@@ -1391,7 +1399,7 @@ kdz_sup_def AS (
         sklad AS "Склад",
         storerkey AS "Заказчик",
         'Поставщик' AS "Виновник",
-
+        workstation as "Рабочее место",
         COALESCE(claim_ct, item_qty, 1) AS claim_qty,
         COALESCE(claim_price, 0) AS unit_price,
         COALESCE(claim_price, 0) * COALESCE(claim_ct, item_qty, 1) AS claim_amount,
@@ -1405,7 +1413,7 @@ all_defects_kdz AS (
     SELECT
         "ДатаВремя","День","Неделя","Час","Смена",
         "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-        "Склад","Заказчик","Виновник",
+        "Склад","Заказчик","Виновник", "Рабочее место",
         claim_qty, unit_price, claim_amount,
         "USER","Наименование","Тип товара",
         OBJECTCODE
@@ -1416,7 +1424,7 @@ all_defects_kdz AS (
     SELECT
         "ДатаВремя","День","Неделя","Час","Смена",
         "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-        "Склад","Заказчик","Виновник",
+        "Склад","Заказчик","Виновник","Рабочее место",
         claim_qty, unit_price, claim_amount,
         "USER","Наименование","Тип товара",
         OBJECTCODE
@@ -1427,7 +1435,7 @@ all_defects_kdz AS (
     SELECT
         "ДатаВремя","День","Неделя","Час","Смена",
         "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-        "Склад","Заказчик","Виновник",
+        "Склад","Заказчик","Виновник","Рабочее место",
         claim_qty, unit_price, claim_amount,
         "USER","Наименование","Тип товара",
         OBJECTCODE
@@ -1438,7 +1446,7 @@ all_defects_kdz AS (
     SELECT
         "ДатаВремя","День","Неделя","Час","Смена",
         "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-        "Склад","Заказчик","Виновник",
+        "Склад","Заказчик","Виновник","Рабочее место",
         claim_qty, unit_price, claim_amount,
         "USER","Наименование","Тип товара",
         OBJECTCODE
@@ -1459,14 +1467,14 @@ SELECT
     "Отклонение из источника",
     "Склад",
     "Заказчик",
-    SUM(claim_amount)         AS "Сумма в руб. отклонений",
-    SUM(claim_qty)            AS "Кол-во шт в отклонении",
     COUNT(DISTINCT OBJECTCODE) AS "Количество отклонений",
+    SUM(claim_qty)            AS "Кол-во шт в отклонении",
+    SUM(claim_amount)         AS "Сумма в руб. отклонений",
     "USER",
     "Наименование",
     "Тип товара",
-    "Виновник"  ---добавил Ленар 12 марта
-    --,OBJECTCODE
+    "Виновник",
+    "Рабочее место"
 FROM all_defects_kdz
 GROUP BY
     "ДатаВремя",
@@ -1483,8 +1491,8 @@ GROUP BY
     "USER",
     "Наименование",
     "Тип товара",
-    --OBJECTCODE,
-    "Виновник"),  ---добавил Ленар 12 марта
+    "Виновник",
+    "Рабочее место"),
     ---------------------------------------------------------------------------DWC
  
 user_mapping AS (
@@ -2141,7 +2149,7 @@ SOURCE_DWC_DETAIL AS (
     FROM  d
 ),
 
-source_dwc_1 as (
+/*source_dwc_1 as (
 SELECT
     OBJECTCODE                              AS "OBJECTCODE",
     detailname                              AS "DETAILNAME",
@@ -2202,13 +2210,14 @@ SELECT
     employee_id                             AS "ID сотрудника",
     CONCAT(employee_id, ' ', employee_name) AS "Сотрудник",
     workstation                             AS "Рабочее место"
-FROM SOURCE_DWC_DETAIL) , 
+FROM SOURCE_DWC_DETAIL) , */
 receipt_problems_2 AS (
     SELECT
         CONCAT(rd.ORDERDETAILSUBID, '_', rd.portion) AS objectcode,
         p.ID AS problem_id,
         l.CREATEDATE::timestamp_ntz AS createdate,
         p.SHORTNAME,
+        rd.RECEIPTPLACE,
         CASE
             WHEN p.ID IN (4, 6, 7) THEN 'd21'
             WHEN p.ID = 10         THEN 'd22'
@@ -2244,9 +2253,9 @@ ops_dwc_enriched AS (
         LAG(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTCODE ORDER BY o.OPERATION_DT) AS prev_op_dt,
 
         -- для time-дефектов (следующее движение)
-        case when LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTCODE ORDER BY o.OPERATION_DT) is null then current_date()
-        else LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTCODE ORDER BY o.OPERATION_DT)
-        end AS next_op_dt,
+        CASE WHEN LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTCODE ORDER BY o.OPERATION_DT) IS NULL THEN current_date()
+        ELSE LEAD(o.OPERATION_DT) OVER (PARTITION BY o.OBJECTCODE ORDER BY o.OPERATION_DT)
+        END AS next_op_dt,
         LEAD(o.TYPE) OVER (PARTITION BY o.OBJECTCODE ORDER BY o.OPERATION_DT) AS next_type
 
     FROM ops_dwc_raw o
@@ -2259,7 +2268,7 @@ dwc_defect_actor AS (
         rp.problem_id,
         rp.defect_flag,
         rp.createdate,
-
+        rp.receiptplace,
         o.prev_op_dt AS defect_op_dt,
         o.prev_type    AS defect_stage_type, --для дефектов обнаруженных на складе берем предыдущий этап, т.к. считаем что накосячили на пред этапе
         o.prev_userid      AS defect_user_id,
@@ -2270,7 +2279,7 @@ dwc_defect_actor AS (
         o.ITEM_TYPE,
 
         COALESCE(NULLIF(o.ITEMS, 0), 1) AS claim_qty,
-        COALESCE(o.DETAILPRICEBUY, 0) * COALESCE(NULLIF(o.ITEMS, 0), 1) AS claim_amount
+        COALESCE(o.DETAILPRICEBUY_RUB, 0) * COALESCE(NULLIF(o.ITEMS, 0), 1) AS claim_amount
     FROM receipt_problems_2 rp
     JOIN ops_dwc_enriched o
       ON o.OBJECTCODE = rp.objectcode
@@ -2316,7 +2325,7 @@ dwc_receipt_defects_prepared AS (
         'DWC' AS "Склад",
         COALESCE(CUSTOMERNAME,'EMEX') AS "Заказчик",
         'Склад' AS "Виновник",
-
+        receiptplace as "Рабочее место",
         1 AS claim_ct,
         claim_qty,
         claim_amount,
@@ -2359,9 +2368,10 @@ dwc_time_defect_events AS (
         'DWC' AS "Склад",
         COALESCE(o.CUSTOMERNAME,'EMEX') AS "Заказчик",
         'Склад' AS "Виновник",
+        null as "Рабочее место",
         1 AS claim_ct,
         COALESCE(NULLIF(o.ITEMS, 0), 1) AS claim_qty,
-        COALESCE(o.DETAILPRICEBUY, 0) * COALESCE(NULLIF(o.ITEMS, 0), 1) AS claim_amount,
+        COALESCE(o.DETAILPRICEBUY_RUB, 0) * COALESCE(NULLIF(o.ITEMS, 0), 1) AS claim_amount,
 
         COALESCE(o.USERNAME, 'UNKNOWN') AS "USER",
         o.DETAILNAME AS "Наименование",
@@ -2404,7 +2414,7 @@ dwc_supplier_receipt_defects AS (
 
         CASE
             WHEN problem_code = 'Повреждение'    THEN 'повреждение'
-            WHEN problem_code = 'Без маркировки' THEN 'повреждение упаковки'
+            WHEN problem_code = 'Без маркировки' THEN 'повреждение'
             WHEN problem_code = 'Недостача'      THEN 'недостача'
             WHEN problem_code = 'Потери'         THEN 'недостача'
             WHEN problem_code = 'Зависший товар' THEN 'недостача 30д'
@@ -2414,10 +2424,11 @@ dwc_supplier_receipt_defects AS (
         'DWC' AS "Склад",
         'EMEX' AS "Заказчик",
          'Поставщик' AS "Виновник",
+         workstation as "Рабочее место",
         claim_ct AS claim_ct,
         claim_qty AS claim_qty,
         COALESCE(claim_price, 0) * COALESCE(claim_ct, claim_qty, 1) AS claim_amount,
-
+       
         employee_name AS "USER",
         detailname AS "Наименование",
         item_type AS "Тип товара"
@@ -2428,7 +2439,7 @@ dwc_all_defects AS (
      SELECT
         "ДатаВремя","День","Неделя","Час","Смена",
         "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-        "Склад","Заказчик","Виновник",
+        "Склад","Заказчик","Виновник", "Рабочее место",
         claim_ct, claim_qty, claim_amount,
         "USER","Наименование","Тип товара"
     FROM dwc_receipt_defects_prepared
@@ -2438,7 +2449,7 @@ dwc_all_defects AS (
     SELECT
         "ДатаВремя","День","Неделя","Час","Смена",
         "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-        "Склад","Заказчик","Виновник",
+        "Склад","Заказчик","Виновник","Рабочее место",
         claim_ct, claim_qty, claim_amount,
         "USER","Наименование","Тип товара"
     FROM dwc_time_defect_events
@@ -2448,7 +2459,7 @@ dwc_all_defects AS (
     SELECT
         "ДатаВремя","День","Неделя","Час","Смена",
         "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-        "Склад","Заказчик","Виновник",
+        "Склад","Заказчик","Виновник","Рабочее место",
         claim_ct, claim_qty, claim_amount,
         "USER","Наименование","Тип товара"
     FROM dwc_supplier_receipt_defects
@@ -2462,15 +2473,17 @@ SELECT
     SUM(claim_ct)      AS "Количество отклонений",
     SUM(claim_qty)     AS "Кол-во шт в отклонении",
     SUM(claim_amount)  AS "Сумма в руб. отклонений",
-    "USER","Наименование","Тип товара", "Виновник"
+    "USER","Наименование","Тип товара", "Виновник", "Рабочее место"
 FROM dwc_all_defects
 GROUP BY
     "ДатаВремя","День","Неделя","Час","Смена",
     "Этап","Категория отклонения","Отклонение","Отклонение из источника",
-    "Склад","Заказчик","USER","Наименование","Тип товара","Виновник")
-
-select * from BD_UNION
-union all
-select * from kdz_union
-union all
-select * from dwc_union
+    "Склад","Заказчик","USER","Наименование","Тип товара","Виновник","Рабочее место") --добавдено Рабочее место
+,
+all_defects_final AS (
+    SELECT * FROM BD_UNION
+    UNION ALL
+    SELECT * FROM kdz_union
+    UNION ALL
+    SELECT * FROM dwc_union
+)
