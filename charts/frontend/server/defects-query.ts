@@ -18,10 +18,10 @@ const ANCHOR = "2026-01-01";
 
 function resolveDeviationsSqlPath(): string {
   const candidates = [
+    join(__dirname, "../../deviations.sql"),
     join(__dirname, "../../../deviations.sql"),
     join(process.cwd(), "deviations.sql"),
     join(process.cwd(), "../deviations.sql"),
-    join(process.cwd(), "../../deviations.sql"),
   ];
   for (const p of candidates) {
     if (existsSync(p)) return p;
