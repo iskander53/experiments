@@ -28,6 +28,8 @@ let cachedRows: DefectRow[] = [];
 let cachedFrom: string | null = null;
 let cachedTo: string | null = null;
 let loadingPromise: Promise<void> | null = null;
+let lastFailure: { time: number; error: string } | null = null;
+const RETRY_COOLDOWN_MS = 30_000;
 
 function rowToDefect(raw: Record<string, unknown>): DefectRow {
   const m = mapRow(raw);
@@ -61,8 +63,12 @@ async function fetchRange(dateFrom: string, dateTo?: string): Promise<DefectRow[
   console.log(`[Cache] Fetching Snowflake range ${dateFrom} → ${dateTo ?? "now"}...`);
   const cte = buildDefectsCTE(dateFrom, dateTo);
   const sql = `${cte} SELECT * FROM all_defects_final`;
-  const rows = await querySnowflake<Record<string, unknown>>(sql);
-  const result = rows.map(rowToDefect);
+  const result: DefectRow[] = [];
+  await querySnowflake<Record<string, unknown>>(sql, [], (chunk) => {
+    for (const raw of chunk) {
+      result.push(rowToDefect(raw));
+    }
+  });
   console.log(`[Cache] Fetched ${result.length} rows in ${Date.now() - t0}ms`);
   return result;
 }

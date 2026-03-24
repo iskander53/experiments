@@ -17,7 +17,7 @@ const connectionConfig: snowflake.ConnectionOptions = {
   role: process.env.SNOWFLAKE_ROLE,
 };
 
-const POOL_SIZE = 3;
+const POOL_SIZE = 1;
 const pool: snowflake.Connection[] = [];
 const available: snowflake.Connection[] = [];
 let initializing = false;
@@ -63,7 +63,8 @@ function release(conn: snowflake.Connection): void {
 
 export async function querySnowflake<T = Record<string, unknown>>(
   sql: string,
-  binds: (string | number)[] = []
+  binds: (string | number)[] = [],
+  onChunk?: (rows: T[]) => void,
 ): Promise<T[]> {
   await initPool();
   const conn = await acquire();
@@ -72,9 +73,33 @@ export async function querySnowflake<T = Record<string, unknown>>(
       conn.execute({
         sqlText: sql,
         binds: binds as snowflake.Binds,
-        complete: (err, _stmt, rows) => {
+        streamResult: true,
+        complete: (err, stmt) => {
           if (err) return reject(err);
-          resolve((rows || []) as T[]);
+          const stream = stmt!.streamRows();
+          const result: T[] = [];
+          let chunk: T[] = [];
+
+          stream.on("data", (row: T) => {
+            if (onChunk) {
+              chunk.push(row);
+              if (chunk.length >= 1000) {
+                onChunk(chunk);
+                chunk = [];
+              }
+            } else {
+              result.push(row);
+            }
+          });
+          stream.on("error", reject);
+          stream.on("end", () => {
+            if (onChunk) {
+              if (chunk.length > 0) onChunk(chunk);
+              resolve(result);
+            } else {
+              resolve(result);
+            }
+          });
         },
       });
     });
