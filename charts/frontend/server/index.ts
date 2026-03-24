@@ -166,9 +166,9 @@ app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 
   const today = new Date();
-  const threeMonthsAgo = new Date(today);
-  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-  const from = threeMonthsAgo.toISOString().split("T")[0];
+  const oneMonthAgo = new Date(today);
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  const from = oneMonthAgo.toISOString().split("T")[0];
   const to = today.toISOString().split("T")[0];
   ensureCache(from, to).catch((e) => console.error("[Cache] Warm-up failed:", e));
 });

@@ -1246,10 +1246,10 @@ function TreemapSection({
 
 function getDefaultDateRange() {
   const today = new Date();
-  const threeMonthsAgo = new Date(today);
-  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+  const oneMonthAgo = new Date(today);
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
   return {
-    from: threeMonthsAgo.toISOString().split("T")[0],
+    from: oneMonthAgo.toISOString().split("T")[0],
     to: today.toISOString().split("T")[0],
   };
 }
