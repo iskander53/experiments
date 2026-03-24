@@ -1009,7 +1009,6 @@ function TreemapSection({
     while (target && target !== e.currentTarget) {
       const data = target.__data__;
       if (data) {
-        // Plotly treemap stores data differently depending on version
         const pointId = data.id ?? data.data?.id;
         const pointLabel = data.label ?? data.data?.label;
         if (pointId && leafNodeIds.has(pointId)) {
@@ -1021,12 +1020,15 @@ function TreemapSection({
     return null;
   };
 
+  // Track hovered point from Plotly events for right-click
+  const lastHoveredPoint = useRef<{id: string, label: string} | null>(null);
+
   // Attach native contextmenu listener to Plotly's container for reliable right-click
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const contextHandlerRef = useRef<(e: MouseEvent) => void>(() => {});
   
   contextHandlerRef.current = (e: MouseEvent) => {
-    const point = getPointFromEvent(e);
+    const point = getPointFromEvent(e) || lastHoveredPoint.current;
     if (!point) return;
     
     e.preventDefault();
@@ -1084,7 +1086,7 @@ function TreemapSection({
     const handler = (e: MouseEvent) => contextHandlerRef.current(e);
     container.addEventListener("contextmenu", handler);
     return () => container.removeEventListener("contextmenu", handler);
-  }, []);
+  });
 
   return (
     <div className="treemap-section">
@@ -1151,6 +1153,15 @@ function TreemapSection({
                   boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
                   border: "1px solid #e0e0e0",
                 }}
+                onHover={(event: any) => {
+                  const pt = event.points?.[0];
+                  if (pt?.id && leafNodeIds.has(pt.id)) {
+                    lastHoveredPoint.current = { id: pt.id, label: pt.label || pt.id };
+                  } else {
+                    lastHoveredPoint.current = null;
+                  }
+                }}
+                onUnhover={() => { lastHoveredPoint.current = null; }}
               />
               <p className="context-hint">Правый клик на ячейке нижнего уровня — показать детали</p>
             </div>
